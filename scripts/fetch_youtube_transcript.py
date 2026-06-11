@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import html
 import importlib
 import json
 import os
@@ -10,6 +11,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.parse
 import urllib.request
@@ -33,12 +35,22 @@ DEFAULT_LANGS = [
     "zh-HK",
     "zh",
 ]
-PACKAGE_SPEC = "youtube-transcript-api>=1.2.0,<2"
+DEFAULT_PROVIDERS = ["yt-dlp", "api", "browser", "asr"]
+DEPENDENCIES = {
+    "youtube_transcript_api": "youtube-transcript-api>=1.2.0,<2",
+    "yt_dlp": "yt-dlp>=2025.1.0",
+    "faster_whisper": "faster-whisper>=1.0.0",
+}
 VENDOR_DIR = Path(__file__).resolve().parent / "_vendor"
 INSTALL_LOCK_PATH = VENDOR_DIR.parent / ".vendor-install.lock"
 VIDEO_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{11}$")
 TIMESTAMP_RE = re.compile(r"^\d{1,2}:\d{2}(?::\d{2})?$")
 CHAPTER_RE = re.compile(r"^Chapter\s+\d+:\s+(.+)$")
+VTT_TIMESTAMP_RE = re.compile(
+    r"(?P<start>\d{2}:\d{2}:\d{2}\.\d{3}|\d{2}:\d{2}\.\d{3})\s+-->\s+"
+    r"(?P<end>\d{2}:\d{2}:\d{2}\.\d{3}|\d{2}:\d{2}\.\d{3})"
+)
+TAG_RE = re.compile(r"<[^>]+>")
 PLAYWRIGHT_CAPTURE_VAR = "__YOUTUBE_CAPTION_SUMMARY_CAPTURE"
 PLAYWRIGHT_TIMEOUT_MS = 180_000
 PLAYWRIGHT_CAPTURE_CODE = f"""
@@ -87,7 +99,7 @@ class UserError(RuntimeError):
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Fetch a YouTube transcript and normalize it into text or JSON.",
+        description="Fetch YouTube captions into a v2 caption artifact.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
@@ -100,18 +112,33 @@ def parse_args() -> argparse.Namespace:
         help="Comma-separated preferred caption language codes.",
     )
     parser.add_argument(
-        "--translate-to",
-        help="Optional language code to translate the fetched transcript into.",
+        "--providers",
+        default=",".join(DEFAULT_PROVIDERS),
+        help="Comma-separated provider order: yt-dlp, api, browser, asr.",
     )
     parser.add_argument(
         "--strategy",
         choices=("auto", "api", "browser"),
-        default="auto",
-        help="Transcript fetch strategy. 'auto' prefers the browser transcript panel first, then falls back to the direct API path.",
+        help="Backward-compatible alias for --providers.",
+    )
+    parser.add_argument(
+        "--translate-to",
+        help="Optional language code. Only the youtube-transcript-api provider can translate directly.",
+    )
+    parser.add_argument(
+        "--chunk-seconds",
+        type=float,
+        default=90.0,
+        help="Time window in seconds for chunk generation.",
+    )
+    parser.add_argument(
+        "--asr-model",
+        default="base",
+        help="faster-whisper model name used when ASR fallback is required.",
     )
     parser.add_argument(
         "--format",
-        choices=("json", "text", "segments"),
+        choices=("json", "text", "segments", "chunks"),
         default="json",
         help="Output format.",
     )
@@ -130,6 +157,34 @@ def parse_args() -> argparse.Namespace:
 def parse_languages(raw: str) -> list[str]:
     langs = [item.strip() for item in raw.split(",") if item.strip()]
     return langs or DEFAULT_LANGS.copy()
+
+
+def parse_providers(raw: str, strategy: str | None = None) -> list[str]:
+    if strategy == "api":
+        return ["api"]
+    if strategy == "browser":
+        return ["browser"]
+    if strategy == "auto":
+        return DEFAULT_PROVIDERS.copy()
+
+    aliases = {
+        "yt_dlp": "yt-dlp",
+        "ytdlp": "yt-dlp",
+        "youtube-transcript-api": "api",
+        "youtube_transcript_api": "api",
+        "playwright": "browser",
+        "whisper": "asr",
+        "faster-whisper": "asr",
+    }
+    providers = []
+    for item in raw.split(","):
+        provider = aliases.get(item.strip().lower(), item.strip().lower())
+        if not provider:
+            continue
+        if provider not in DEFAULT_PROVIDERS:
+            raise UserError(f"Unsupported provider '{provider}'.")
+        providers.append(provider)
+    return providers or DEFAULT_PROVIDERS.copy()
 
 
 def extract_video_id(value: str) -> str:
@@ -185,6 +240,9 @@ def format_timestamp(seconds: float) -> str:
 
 
 def parse_timestamp(value: str) -> float:
+    if "." in value:
+        base, milliseconds = value.split(".", 1)
+        return parse_timestamp(base) + float(f"0.{milliseconds}")
     parts = [int(part) for part in value.split(":")]
     if len(parts) == 2:
         minutes, seconds = parts
@@ -207,43 +265,6 @@ def is_duration_line(line: str) -> bool:
     )
 
 
-def ensure_dependency() -> Any:
-    if str(VENDOR_DIR) not in sys.path:
-        sys.path.insert(0, str(VENDOR_DIR))
-
-    try:
-        return importlib.import_module("youtube_transcript_api")
-    except ImportError:
-        with vendor_install_lock():
-            try:
-                importlib.invalidate_caches()
-                return importlib.import_module("youtube_transcript_api")
-            except ImportError:
-                VENDOR_DIR.mkdir(parents=True, exist_ok=True)
-                print(
-                    "Installing youtube-transcript-api into scripts/_vendor ...",
-                    file=sys.stderr,
-                )
-                subprocess.run(
-                    [
-                        sys.executable,
-                        "-m",
-                        "pip",
-                        "install",
-                        "--disable-pip-version-check",
-                        "--quiet",
-                        "--target",
-                        str(VENDOR_DIR),
-                        PACKAGE_SPEC,
-                    ],
-                    check=True,
-                )
-                importlib.invalidate_caches()
-                if str(VENDOR_DIR) not in sys.path:
-                    sys.path.insert(0, str(VENDOR_DIR))
-                return importlib.import_module("youtube_transcript_api")
-
-
 @contextlib.contextmanager
 def vendor_install_lock(timeout_seconds: float = 120.0):
     if fcntl is None:
@@ -259,14 +280,49 @@ def vendor_install_lock(timeout_seconds: float = 120.0):
                 break
             except BlockingIOError:
                 if time.monotonic() - start >= timeout_seconds:
-                    raise UserError(
-                        "Timed out waiting for the transcript dependency install lock."
-                    )
+                    raise UserError("Timed out waiting for the caption dependency install lock.")
                 time.sleep(0.1)
         try:
             yield
         finally:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def ensure_dependency(import_name: str, *, install: bool = True) -> Any:
+    if str(VENDOR_DIR) not in sys.path:
+        sys.path.insert(0, str(VENDOR_DIR))
+
+    try:
+        return importlib.import_module(import_name)
+    except ImportError:
+        if not install:
+            raise
+        package_spec = DEPENDENCIES[import_name]
+        with vendor_install_lock():
+            try:
+                importlib.invalidate_caches()
+                return importlib.import_module(import_name)
+            except ImportError:
+                VENDOR_DIR.mkdir(parents=True, exist_ok=True)
+                print(f"Installing {package_spec} into scripts/_vendor ...", file=sys.stderr)
+                subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "pip",
+                        "install",
+                        "--disable-pip-version-check",
+                        "--quiet",
+                        "--target",
+                        str(VENDOR_DIR),
+                        package_spec,
+                    ],
+                    check=True,
+                )
+                importlib.invalidate_caches()
+                if str(VENDOR_DIR) not in sys.path:
+                    sys.path.insert(0, str(VENDOR_DIR))
+                return importlib.import_module(import_name)
 
 
 def fetch_title(source_url: str) -> str | None:
@@ -282,6 +338,171 @@ def fetch_title(source_url: str) -> str | None:
         return None
     title = payload.get("title")
     return title.strip() if isinstance(title, str) and title.strip() else None
+
+
+def clean_caption_text(value: str) -> str:
+    text = re.sub(r"<\d{2}:\d{2}:\d{2}\.\d{3}>", " ", value)
+    text = TAG_RE.sub(" ", text)
+    text = html.unescape(text)
+    text = text.replace("\ufeff", " ")
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def normalize_segments(raw_segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    previous_text: str | None = None
+    for raw in sorted(raw_segments, key=lambda item: float(item.get("start", 0.0))):
+        text = clean_caption_text(str(raw.get("text", "")))
+        if not text or text == previous_text:
+            continue
+        start = round(float(raw.get("start", 0.0)), 3)
+        if "end" in raw:
+            end = round(float(raw.get("end", start)), 3)
+            duration = max(round(end - start, 3), 0.0)
+        else:
+            duration = max(round(float(raw.get("duration", 0.0)), 3), 0.0)
+            end = round(start + duration, 3)
+        item = {
+            "text": text,
+            "start": start,
+            "duration": duration,
+            "end": end,
+            "timestamp": format_timestamp(start),
+        }
+        for key, value in raw.items():
+            if key not in item and key not in {"duration", "end"}:
+                item[key] = value
+        normalized.append(item)
+        previous_text = text
+    return finalize_segments(normalized)
+
+
+def finalize_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    for index, segment in enumerate(segments):
+        if "duration" not in segment or "end" not in segment:
+            if index + 1 < len(segments):
+                duration = max(segments[index + 1]["start"] - segment["start"], 0.0)
+            else:
+                duration = 0.0
+            segment["duration"] = round(duration, 3)
+            segment["end"] = round(segment["start"] + segment["duration"], 3)
+    return segments
+
+
+def join_transcript_text(segments: list[dict[str, Any]]) -> str:
+    return "\n".join(segment["text"] for segment in segments)
+
+
+def parse_vtt(vtt_text: str) -> list[dict[str, Any]]:
+    segments: list[dict[str, Any]] = []
+    lines = vtt_text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    index = 0
+    while index < len(lines):
+        line = lines[index].strip()
+        timestamp_match = VTT_TIMESTAMP_RE.search(line)
+        if not timestamp_match:
+            index += 1
+            continue
+
+        start = parse_timestamp(timestamp_match.group("start"))
+        end = parse_timestamp(timestamp_match.group("end"))
+        index += 1
+        text_parts: list[str] = []
+        while index < len(lines) and lines[index].strip():
+            text_parts.append(lines[index].strip())
+            index += 1
+        text = clean_caption_text(" ".join(text_parts))
+        if text:
+            segments.append({"text": text, "start": start, "end": end})
+        index += 1
+
+    if not segments:
+        raise UserError("VTT caption file did not contain any parseable segments.")
+    return normalize_segments(segments)
+
+
+def build_chunks(
+    segments: list[dict[str, Any]],
+    chunk_seconds: float,
+    source_provider: str,
+) -> list[dict[str, Any]]:
+    if chunk_seconds <= 0:
+        raise UserError("--chunk-seconds must be greater than zero.")
+
+    chunks: list[dict[str, Any]] = []
+    current_index: int | None = None
+    current_items: list[dict[str, Any]] = []
+
+    def flush() -> None:
+        if current_index is None or not current_items:
+            return
+        start = round(current_index * chunk_seconds, 3)
+        end = round((current_index + 1) * chunk_seconds, 3)
+        text = "\n".join(item["text"] for item in current_items if item.get("text"))
+        if not text.strip():
+            return
+        chunks.append(
+            {
+                "start": start,
+                "end": end,
+                "timestamp": format_timestamp(start),
+                "text": text,
+                "segment_count": len(current_items),
+                "source_provider": source_provider,
+            }
+        )
+
+    for segment in segments:
+        text = str(segment.get("text", "")).strip()
+        if not text:
+            continue
+        segment_index = int(float(segment.get("start", 0.0)) // chunk_seconds)
+        if current_index is None:
+            current_index = segment_index
+        if segment_index != current_index:
+            flush()
+            current_index = segment_index
+            current_items = []
+        current_items.append(segment)
+    flush()
+    return chunks
+
+
+def quality_summary(segments: list[dict[str, Any]], is_generated: bool | None = None) -> dict[str, Any]:
+    duration_seconds = round(max((float(segment.get("end", 0.0)) for segment in segments), default=0.0), 3)
+    text_length = sum(len(str(segment.get("text", ""))) for segment in segments)
+    score = 0
+    reasons: list[str] = []
+    if segments:
+        score += 40
+        reasons.append("segments_present")
+    if len(segments) >= 3:
+        score += 20
+        reasons.append("multiple_segments")
+    if duration_seconds >= 30:
+        score += 20
+        reasons.append("duration_covered")
+    if text_length >= 200:
+        score += 10
+        reasons.append("substantial_text")
+    if is_generated is False:
+        score += 10
+        reasons.append("manual_caption")
+    if is_generated is True:
+        reasons.append("automatic_or_asr_caption")
+    return {
+        "score": min(score, 100),
+        "reasons": reasons,
+        "segment_count": len(segments),
+        "duration_seconds": duration_seconds,
+        "text_length": text_length,
+    }
+
+
+def is_quality_sufficient(result: dict[str, Any]) -> bool:
+    quality = quality_summary(result.get("segments", []), result.get("is_generated"))
+    return bool(result.get("segments")) and quality["score"] >= 50
 
 
 def list_available_transcripts(transcript_list: Any) -> list[dict[str, Any]]:
@@ -333,85 +554,96 @@ def fetch_with_optional_translation(
     return transcript.fetch(preserve_formatting=preserve_formatting)
 
 
-def normalize_segments(raw_segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    normalized: list[dict[str, Any]] = []
-    for raw in raw_segments:
-        text = str(raw.get("text", "")).strip()
-        start = float(raw.get("start", 0.0))
-        duration = float(raw.get("duration", 0.0))
-        if not text:
-            continue
-        normalized.append(
-            {
-                "text": text,
-                "start": start,
-                "duration": duration,
-                "end": round(start + duration, 2),
-                "timestamp": format_timestamp(start),
-            }
-        )
-    return normalized
+def choose_yt_dlp_caption(
+    info: dict[str, Any],
+    requested_languages: list[str],
+) -> tuple[dict[str, Any], bool, bool]:
+    subtitles = info.get("subtitles") or {}
+    automatic_captions = info.get("automatic_captions") or {}
+
+    for captions, is_generated in ((subtitles, False), (automatic_captions, True)):
+        for language in requested_languages:
+            tracks = captions.get(language)
+            if tracks:
+                track = choose_yt_dlp_track(tracks)
+                track["language_code"] = language
+                return track, is_generated, False
+
+        for language, tracks in captions.items():
+            if tracks:
+                track = choose_yt_dlp_track(tracks)
+                track["language_code"] = language
+                return track, is_generated, True
+
+    raise UserError("No manual or automatic captions are available from yt-dlp.")
 
 
-def finalize_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    for index, segment in enumerate(segments):
-        if "duration" not in segment or "end" not in segment:
-            if index + 1 < len(segments):
-                duration = max(segments[index + 1]["start"] - segment["start"], 0.0)
-            else:
-                duration = 0.0
-            segment["duration"] = round(duration, 2)
-            segment["end"] = round(segment["start"] + segment["duration"], 2)
-    return segments
+def choose_yt_dlp_track(tracks: list[dict[str, Any]]) -> dict[str, Any]:
+    if not isinstance(tracks, list) or not tracks:
+        raise UserError("Caption track list is empty.")
+    preferred_exts = ["vtt", "webvtt", "srv3", "ttml", "json3"]
+    for ext in preferred_exts:
+        for track in tracks:
+            if str(track.get("ext", "")).lower() == ext and track.get("url"):
+                return dict(track)
+    for track in tracks:
+        if track.get("url"):
+            return dict(track)
+    raise UserError("Caption track did not contain a downloadable URL.")
 
 
-def join_transcript_text(segments: list[dict[str, Any]]) -> str:
-    return "\n".join(segment["text"] for segment in segments)
+def download_caption_text(track: dict[str, Any]) -> str:
+    url = track.get("url")
+    if not isinstance(url, str) or not url:
+        raise UserError("Caption track did not contain a URL.")
+    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(request, timeout=60) as response:
+        return response.read().decode("utf-8", errors="replace")
 
 
-def build_result(
+def fetch_via_yt_dlp(
     *,
     video_id: str,
     source_url: str,
     title: str | None,
     requested_languages: list[str],
-    segments: list[dict[str, Any]],
-    transcript_language: str | None,
-    transcript_language_code: str | None,
-    is_generated: bool | None,
-    used_language_fallback: bool,
-    translated_to: str | None,
-    available_transcripts: list[dict[str, Any]],
-    strategy_used: str,
-    chapters: list[dict[str, Any]] | None = None,
-    notes: list[str] | None = None,
-    page_language_code: str | None = None,
+    translate_to: str | None,
+    preserve_formatting: bool,
 ) -> dict[str, Any]:
-    segments = finalize_segments(segments)
-    duration_seconds = round(
-        max((segment["end"] for segment in segments), default=0.0),
-        2,
-    )
-    return {
-        "video_id": video_id,
-        "source_url": source_url,
-        "title": title,
-        "requested_languages": requested_languages,
-        "transcript_language": transcript_language,
-        "transcript_language_code": transcript_language_code,
-        "page_language_code": page_language_code,
-        "is_generated": is_generated,
-        "used_language_fallback": used_language_fallback,
-        "translated_to": translated_to,
-        "segment_count": len(segments),
-        "duration_seconds": duration_seconds,
-        "available_transcripts": available_transcripts,
-        "strategy_used": strategy_used,
-        "chapters": chapters or [],
-        "notes": notes or [],
-        "text": join_transcript_text(segments),
-        "segments": segments,
+    del translate_to, preserve_formatting
+    yt_dlp = ensure_dependency("yt_dlp")
+    options = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "writesubtitles": True,
+        "writeautomaticsub": True,
     }
+    with yt_dlp.YoutubeDL(options) as ydl:
+        info = ydl.extract_info(source_url, download=False)
+    track, is_generated, used_language_fallback = choose_yt_dlp_caption(info, requested_languages)
+    ext = str(track.get("ext", "")).lower()
+    if ext not in {"vtt", "webvtt"}:
+        raise UserError(f"yt-dlp selected caption format '{ext}', but only VTT is supported now.")
+    segments = parse_vtt(download_caption_text(track))
+    return build_provider_result(
+        provider="yt-dlp",
+        video_id=video_id,
+        source_url=source_url,
+        title=info.get("title") or title,
+        segments=segments,
+        chapters=[],
+        language_code=track.get("language_code"),
+        is_generated=is_generated,
+        used_language_fallback=used_language_fallback,
+        source_format=ext,
+        notes=["Caption was extracted from yt-dlp metadata subtitles."],
+        raw_metadata={
+            "format": ext,
+            "name": track.get("name"),
+            "duration": info.get("duration"),
+        },
+    )
 
 
 def fetch_via_api(
@@ -422,9 +654,8 @@ def fetch_via_api(
     requested_languages: list[str],
     translate_to: str | None,
     preserve_formatting: bool,
-    prior_error: Exception | None = None,
 ) -> dict[str, Any]:
-    yta = ensure_dependency()
+    yta = ensure_dependency("youtube_transcript_api")
     api = yta.YouTubeTranscriptApi()
     transcript_list = api.list(video_id)
     available_transcripts = list_available_transcripts(transcript_list)
@@ -438,23 +669,23 @@ def fetch_via_api(
         translate_to,
         preserve_formatting,
     )
-    notes: list[str] = []
-    if prior_error is not None:
-        notes.append(summarize_fetch_error("Browser transcript extraction", prior_error))
-    return build_result(
+    return build_provider_result(
+        provider="api",
         video_id=video_id,
         source_url=source_url,
         title=title,
-        requested_languages=requested_languages,
         segments=normalize_segments(fetched_transcript.to_raw_data()),
-        transcript_language=fetched_transcript.language,
-        transcript_language_code=fetched_transcript.language_code,
+        chapters=[],
+        language_code=fetched_transcript.language_code,
         is_generated=fetched_transcript.is_generated,
         used_language_fallback=used_language_fallback,
         translated_to=translate_to,
-        available_transcripts=available_transcripts,
-        strategy_used="youtube_transcript_api",
-        notes=notes,
+        source_format="youtube_transcript_api",
+        notes=["Caption was extracted with youtube-transcript-api."],
+        raw_metadata={
+            "available_transcripts": available_transcripts,
+            "language": fetched_transcript.language,
+        },
     )
 
 
@@ -526,7 +757,7 @@ def extract_transcript_block(body_text: str) -> str:
 
     end_markers = [
         marker
-        for marker in ("\nSync to video time", "\nAutoplay\n", "\nUp next\n")
+        for marker in ("\nSync to video time", "\nAutoplay\n", "\nUp next\n", "\nSuggested videos")
         if marker in normalized[start:]
     ]
     if end_markers:
@@ -613,7 +844,7 @@ def parse_browser_transcript_block(
             "Browser transcript extraction opened the transcript panel but could not parse any segments."
         )
 
-    return segments, chapters
+    return normalize_segments(segments), chapters
 
 
 def fetch_via_browser(
@@ -623,14 +854,13 @@ def fetch_via_browser(
     title: str | None,
     requested_languages: list[str],
     translate_to: str | None,
-    prior_error: Exception | None,
+    preserve_formatting: bool,
 ) -> dict[str, Any]:
+    del requested_languages, preserve_formatting
     command = playwright_cli_command()
     notes: list[str] = [
         "Transcript was extracted from the YouTube transcript panel in a real browser."
     ]
-    if prior_error is not None:
-        notes.append(summarize_fetch_error("Direct API transcript fetch", prior_error))
     if translate_to:
         notes.append(
             "Browser transcript extraction returns the original transcript track; translate during summarization if needed."
@@ -675,31 +905,316 @@ def fetch_via_browser(
     if capture.get("antiBot"):
         notes.append("The watch page showed a bot-check banner, but the transcript panel was still accessible.")
 
-    resolved_title = title or capture.get("title")
-    return build_result(
+    return build_provider_result(
+        provider="browser",
         video_id=video_id,
         source_url=source_url,
-        title=resolved_title,
-        requested_languages=requested_languages,
+        title=title or capture.get("title"),
         segments=segments,
-        transcript_language=None,
-        transcript_language_code=None,
-        page_language_code=capture.get("htmlLang"),
+        chapters=chapters,
+        language_code=capture.get("htmlLang"),
         is_generated=None,
         used_language_fallback=False,
-        translated_to=None,
-        available_transcripts=[],
-        strategy_used="playwright-transcript-panel",
-        chapters=chapters,
+        source_format="transcript_panel",
         notes=notes,
+        raw_metadata={"page_language_code": capture.get("htmlLang")},
     )
+
+
+def download_audio(source_url: str, work_dir: Path) -> Path:
+    yt_dlp = ensure_dependency("yt_dlp")
+    output_template = str(work_dir / "audio.%(ext)s")
+    options = {
+        "format": "bestaudio/best",
+        "outtmpl": output_template,
+        "quiet": True,
+        "no_warnings": True,
+        "postprocessors": [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "m4a",
+            }
+        ],
+    }
+    with yt_dlp.YoutubeDL(options) as ydl:
+        ydl.download([source_url])
+    candidates = sorted(work_dir.glob("audio.*"))
+    if not candidates:
+        raise UserError("yt-dlp finished but no downloaded audio file was found.")
+    return candidates[0]
+
+
+def normalize_asr_segments(raw_segments: Any) -> list[dict[str, Any]]:
+    raw_items: list[dict[str, Any]] = []
+    for segment in raw_segments:
+        raw_items.append(
+            {
+                "text": getattr(segment, "text", ""),
+                "start": float(getattr(segment, "start", 0.0)),
+                "end": float(getattr(segment, "end", 0.0)),
+            }
+        )
+    return normalize_segments(raw_items)
+
+
+def fetch_via_asr(
+    *,
+    video_id: str,
+    source_url: str,
+    title: str | None,
+    requested_languages: list[str],
+    translate_to: str | None,
+    preserve_formatting: bool,
+    asr_model: str,
+) -> dict[str, Any]:
+    del preserve_formatting
+    faster_whisper = ensure_dependency("faster_whisper", install=False)
+    language_hint = requested_languages[0].split("-")[0] if requested_languages else None
+    with tempfile.TemporaryDirectory(prefix="youtube-summary-asr-") as temp_name:
+        audio_path = download_audio(source_url, Path(temp_name))
+        model = faster_whisper.WhisperModel(asr_model)
+        segments_iter, info = model.transcribe(
+            str(audio_path),
+            language=language_hint,
+            task="translate" if translate_to else "transcribe",
+        )
+        segments = normalize_asr_segments(list(segments_iter))
+
+    detected_language = getattr(info, "language", None)
+    notes = [
+        "Caption was generated by local faster-whisper ASR and may contain recognition errors.",
+    ]
+    return build_provider_result(
+        provider="asr",
+        video_id=video_id,
+        source_url=source_url,
+        title=title,
+        segments=segments,
+        chapters=[],
+        language_code=detected_language or language_hint,
+        is_generated=True,
+        used_language_fallback=False,
+        translated_to=translate_to,
+        source_format="faster_whisper",
+        notes=notes,
+        raw_metadata={
+            "asr_model": asr_model,
+            "language_probability": getattr(info, "language_probability", None),
+        },
+    )
+
+
+def build_provider_result(
+    *,
+    provider: str,
+    video_id: str,
+    source_url: str,
+    title: str | None,
+    segments: list[dict[str, Any]],
+    chapters: list[dict[str, Any]],
+    language_code: str | None,
+    is_generated: bool | None,
+    used_language_fallback: bool,
+    source_format: str,
+    notes: list[str],
+    raw_metadata: dict[str, Any],
+    translated_to: str | None = None,
+) -> dict[str, Any]:
+    segments = normalize_segments(segments)
+    if not segments:
+        raise UserError(f"{provider} did not return any caption segments.")
+    duration_seconds = round(max((float(segment["end"]) for segment in segments), default=0.0), 3)
+    return {
+        "provider": provider,
+        "video_id": video_id,
+        "source_url": source_url,
+        "title": title,
+        "language_code": language_code,
+        "is_generated": is_generated,
+        "used_language_fallback": used_language_fallback,
+        "translated_to": translated_to,
+        "source_format": source_format,
+        "segment_count": len(segments),
+        "duration_seconds": duration_seconds,
+        "chapters": chapters,
+        "text": join_transcript_text(segments),
+        "segments": segments,
+        "notes": notes,
+        "raw_metadata": raw_metadata,
+    }
+
+
+PROVIDER_FUNCTIONS = {
+    "yt-dlp": fetch_via_yt_dlp,
+    "api": fetch_via_api,
+    "browser": fetch_via_browser,
+}
+
+
+def attempt_provider(
+    provider: str,
+    *,
+    video_id: str,
+    source_url: str,
+    title: str | None,
+    requested_languages: list[str],
+    translate_to: str | None,
+    preserve_formatting: bool,
+    asr_model: str,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    started = time.monotonic()
+    try:
+        if provider == "asr":
+            result = fetch_via_asr(
+                video_id=video_id,
+                source_url=source_url,
+                title=title,
+                requested_languages=requested_languages,
+                translate_to=translate_to,
+                preserve_formatting=preserve_formatting,
+                asr_model=asr_model,
+            )
+        else:
+            result = PROVIDER_FUNCTIONS[provider](
+                video_id=video_id,
+                source_url=source_url,
+                title=title,
+                requested_languages=requested_languages,
+                translate_to=translate_to,
+                preserve_formatting=preserve_formatting,
+            )
+        quality = quality_summary(result["segments"], result.get("is_generated"))
+        attempt = {
+            "provider": provider,
+            "status": "success",
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+            "quality": quality,
+            "language_code": result.get("language_code"),
+            "is_generated": result.get("is_generated"),
+            "source_format": result.get("source_format"),
+        }
+        return attempt, result
+    except Exception as exc:
+        return (
+            {
+                "provider": provider,
+                "status": "failed",
+                "elapsed_seconds": round(time.monotonic() - started, 3),
+                "error": describe_error(exc),
+            },
+            None,
+        )
+
+
+def run_caption_pipeline(
+    *,
+    video: str,
+    requested_languages: list[str],
+    providers: list[str],
+    translate_to: str | None,
+    preserve_formatting: bool,
+    chunk_seconds: float,
+    asr_model: str,
+) -> dict[str, Any]:
+    video_id = extract_video_id(video)
+    source_url = canonical_url(video_id)
+    title = fetch_title(source_url)
+    attempts: list[dict[str, Any]] = []
+    candidates: list[dict[str, Any]] = []
+    selected: dict[str, Any] | None = None
+    selection_reason = ""
+
+    for provider in providers:
+        attempt, result = attempt_provider(
+            provider,
+            video_id=video_id,
+            source_url=source_url,
+            title=title,
+            requested_languages=requested_languages,
+            translate_to=translate_to,
+            preserve_formatting=preserve_formatting,
+            asr_model=asr_model,
+        )
+        attempts.append(attempt)
+        if result is None:
+            continue
+        candidates.append(result)
+        if is_quality_sufficient(result):
+            selected = result
+            selection_reason = f"Selected {provider} because it produced sufficient caption coverage."
+            break
+
+    if selected is None and candidates:
+        selected = max(
+            candidates,
+            key=lambda item: quality_summary(item["segments"], item.get("is_generated"))["score"],
+        )
+        selection_reason = f"Selected {selected['provider']} as the best available caption result."
+
+    if selected is None:
+        raise UserError("All caption providers failed: " + "; ".join(
+            f"{attempt['provider']}: {attempt.get('error', 'unknown error')}"
+            for attempt in attempts
+        ))
+
+    quality = quality_summary(selected["segments"], selected.get("is_generated"))
+    chunks = build_chunks(selected["segments"], chunk_seconds, selected["provider"])
+    notes = list(selected.get("notes", []))
+    if selected.get("is_generated"):
+        notes.append("Selected caption is generated or ASR-derived; review important claims carefully.")
+    if selected.get("used_language_fallback"):
+        notes.append("Requested caption language was unavailable, so a fallback language was selected.")
+
+    return {
+        "schema_version": "caption.v2",
+        "video": {
+            "video_id": video_id,
+            "source_url": source_url,
+            "title": selected.get("title") or title,
+            "duration_seconds": selected.get("duration_seconds"),
+        },
+        "requested": {
+            "languages": requested_languages,
+            "translate_to": translate_to,
+            "providers": providers,
+            "chunk_seconds": chunk_seconds,
+        },
+        "attempts": attempts,
+        "selected_result": {
+            key: selected[key]
+            for key in (
+                "provider",
+                "language_code",
+                "is_generated",
+                "used_language_fallback",
+                "translated_to",
+                "source_format",
+                "segment_count",
+                "duration_seconds",
+                "chapters",
+                "text",
+                "segments",
+                "raw_metadata",
+            )
+            if key in selected
+        },
+        "chunks": chunks,
+        "selection": {
+            "provider": selected["provider"],
+            "reason": selection_reason,
+            "quality": quality,
+        },
+        "notes": notes,
+    }
 
 
 def render_output(payload: dict[str, Any], output_format: str) -> str:
     if output_format == "text":
-        return payload["text"]
+        return payload["selected_result"]["text"]
     if output_format == "segments":
-        return json.dumps(payload["segments"], ensure_ascii=False, indent=2)
+        return json.dumps(payload["selected_result"]["segments"], ensure_ascii=False, indent=2)
+    if output_format == "chunks":
+        return json.dumps(payload["chunks"], ensure_ascii=False, indent=2)
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
@@ -714,77 +1229,28 @@ def describe_error(exc: Exception) -> str:
     return str(exc).strip() or exc.__class__.__name__
 
 
-def summarize_fetch_error(prefix: str, exc: Exception) -> str:
-    message = describe_error(exc)
-    first_line = next((line.strip() for line in message.splitlines() if line.strip()), message)
-    return f"{prefix} failed first: {first_line}"
-
-
 def main() -> int:
     args = parse_args()
-    requested_languages = parse_languages(args.langs)
-
     try:
-        video_id = extract_video_id(args.video)
-        source_url = canonical_url(video_id)
-        title = fetch_title(source_url)
-
-        payload: dict[str, Any]
-        browser_error: Exception | None = None
-        api_error: Exception | None = None
-
-        if args.strategy in {"auto", "browser"}:
-            try:
-                payload = fetch_via_browser(
-                    video_id=video_id,
-                    source_url=source_url,
-                    title=title,
-                    requested_languages=requested_languages,
-                    translate_to=args.translate_to,
-                    prior_error=None,
-                )
-                write_output(render_output(payload, args.format), args.output)
-                return 0
-            except Exception as exc:
-                browser_error = exc
-                if args.strategy == "browser":
-                    raise
-
-        if args.strategy in {"auto", "api"}:
-            try:
-                payload = fetch_via_api(
-                    video_id=video_id,
-                    source_url=source_url,
-                    title=title,
-                    requested_languages=requested_languages,
-                    translate_to=args.translate_to,
-                    preserve_formatting=args.preserve_formatting,
-                    prior_error=browser_error,
-                )
-                write_output(render_output(payload, args.format), args.output)
-                return 0
-            except Exception as exc:
-                api_error = exc
-                if args.strategy == "api":
-                    raise
-
-        if browser_error is not None:
-            raise browser_error
-        if api_error is not None:
-            raise api_error
-        raise UserError("Transcript fetch failed before any strategy could return a result.")
-
+        payload = run_caption_pipeline(
+            video=args.video,
+            requested_languages=parse_languages(args.langs),
+            providers=parse_providers(args.providers, args.strategy),
+            translate_to=args.translate_to,
+            preserve_formatting=args.preserve_formatting,
+            chunk_seconds=args.chunk_seconds,
+            asr_model=args.asr_model,
+        )
+        write_output(render_output(payload, args.format), args.output)
+        return 0
     except UserError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2
     except subprocess.CalledProcessError as exc:
-        print(
-            f"Error: Failed to install transcript dependency ({exc}).",
-            file=sys.stderr,
-        )
+        print(f"Error: Failed to install caption dependency ({exc}).", file=sys.stderr)
         return 1
     except subprocess.TimeoutExpired:
-        print("Error: Transcript fetch timed out.", file=sys.stderr)
+        print("Error: Caption fetch timed out.", file=sys.stderr)
         return 1
     except Exception as exc:
         print(f"Error: {describe_error(exc)}", file=sys.stderr)

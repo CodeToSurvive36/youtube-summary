@@ -51,5 +51,99 @@ class BrowserTranscriptParsingTests(unittest.TestCase):
         self.assertEqual(4.0, finalized[1]["end"])
 
 
+class CaptionV2PipelineTests(unittest.TestCase):
+    def test_choose_yt_dlp_caption_prefers_manual_requested_language(self) -> None:
+        info = {
+            "subtitles": {
+                "en": [{"ext": "vtt", "url": "https://example.test/manual.vtt"}],
+            },
+            "automatic_captions": {
+                "en": [{"ext": "vtt", "url": "https://example.test/auto.vtt"}],
+            },
+        }
+
+        track, is_generated, used_fallback = module.choose_yt_dlp_caption(info, ["en"])
+
+        self.assertFalse(is_generated)
+        self.assertFalse(used_fallback)
+        self.assertEqual("https://example.test/manual.vtt", track["url"])
+        self.assertEqual("en", track["language_code"])
+
+    def test_choose_yt_dlp_caption_uses_automatic_when_manual_missing(self) -> None:
+        info = {
+            "subtitles": {},
+            "automatic_captions": {
+                "en": [{"ext": "vtt", "url": "https://example.test/auto.vtt"}],
+            },
+        }
+
+        track, is_generated, used_fallback = module.choose_yt_dlp_caption(info, ["en"])
+
+        self.assertTrue(is_generated)
+        self.assertFalse(used_fallback)
+        self.assertEqual("https://example.test/auto.vtt", track["url"])
+
+    def test_choose_yt_dlp_caption_records_language_fallback(self) -> None:
+        info = {
+            "subtitles": {
+                "fr": [{"ext": "vtt", "url": "https://example.test/fr.vtt"}],
+            },
+            "automatic_captions": {},
+        }
+
+        track, is_generated, used_fallback = module.choose_yt_dlp_caption(info, ["en"])
+
+        self.assertFalse(is_generated)
+        self.assertTrue(used_fallback)
+        self.assertEqual("fr", track["language_code"])
+
+    def test_parse_vtt_cleans_tags_and_deduplicates_adjacent_text(self) -> None:
+        vtt = """WEBVTT
+
+00:00:00.000 --> 00:00:02.000
+<c>Hello</c> &amp; welcome
+
+00:00:02.000 --> 00:00:04.000
+<00:00:02.500>Hello</00:00:02.500> &amp; welcome
+
+00:00:04.000 --> 00:00:05.500
+Next line
+"""
+
+        segments = module.parse_vtt(vtt)
+
+        self.assertEqual(2, len(segments))
+        self.assertEqual("Hello & welcome", segments[0]["text"])
+        self.assertEqual(0.0, segments[0]["start"])
+        self.assertEqual(2.0, segments[0]["duration"])
+        self.assertEqual("Next line", segments[1]["text"])
+
+    def test_build_chunks_uses_time_windows_and_skips_empty_text(self) -> None:
+        segments = [
+            {"text": "first", "start": 0.0, "end": 10.0, "duration": 10.0},
+            {"text": "", "start": 20.0, "end": 21.0, "duration": 1.0},
+            {"text": "second", "start": 95.0, "end": 100.0, "duration": 5.0},
+            {"text": "third", "start": 100.0, "end": 105.0, "duration": 5.0},
+        ]
+
+        chunks = module.build_chunks(segments, 90.0, "yt-dlp")
+
+        self.assertEqual(2, len(chunks))
+        self.assertEqual(0.0, chunks[0]["start"])
+        self.assertEqual(1, chunks[0]["segment_count"])
+        self.assertEqual("first", chunks[0]["text"])
+        self.assertEqual(90.0, chunks[1]["start"])
+        self.assertEqual(2, chunks[1]["segment_count"])
+        self.assertEqual("second\nthird", chunks[1]["text"])
+        self.assertEqual("yt-dlp", chunks[1]["source_provider"])
+
+    def test_render_chunks_reads_v2_artifact_chunks(self) -> None:
+        payload = {"chunks": [{"text": "chunk"}], "selected_result": {"text": "all", "segments": []}}
+
+        rendered = module.render_output(payload, "chunks")
+
+        self.assertIn('"text": "chunk"', rendered)
+
+
 if __name__ == "__main__":
     unittest.main()

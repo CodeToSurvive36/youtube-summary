@@ -13,6 +13,7 @@ Use this skill when the user provides a YouTube video URL and wants an answer gr
 2. For raw transcript JSON, run `python3 scripts/fetch_youtube_transcript.py "<youtube-url>" --output /tmp/youtube-transcript.json`.
 3. Use the report script when the user wants `中文摘要 + 提到的内容`.
 4. Use the fetch script when you need raw `segments`, `chapters`, or transcript metadata.
+5. For visual evidence artifacts, run the report wrapper with `--with-frames`, or pass `--transcript-input` to reuse a transcript from a separate caption flow.
 
 ## Reliability-First Workflow
 
@@ -33,6 +34,10 @@ python3 scripts/fetch_youtube_transcript.py "https://youtu.be/VIDEO_ID" --format
 python3 scripts/fetch_youtube_transcript.py "https://www.youtube.com/watch?v=VIDEO_ID" --strategy api --output /tmp/video.json
 python3 scripts/fetch_youtube_transcript.py "https://www.youtube.com/watch?v=VIDEO_ID" --strategy browser --output /tmp/video.json
 python3 scripts/youtube_to_chinese_report.py "https://www.youtube.com/watch?v=VIDEO_ID"
+python3 scripts/youtube_to_chinese_report.py "https://www.youtube.com/watch?v=VIDEO_ID" --with-frames --frames-output /tmp/frames_manifest.json --multimodal-output /tmp/multimodal_segments.json
+python3 scripts/youtube_to_chinese_report.py "https://www.youtube.com/watch?v=VIDEO_ID" --with-frames --skip-report --cookies-from-browser chrome --frames-output /tmp/frames_manifest.json --multimodal-output /tmp/multimodal_segments.json --html-output /tmp/video_timeline.html
+python3 scripts/youtube_to_chinese_report.py "https://www.youtube.com/watch?v=VIDEO_ID" --transcript-input /tmp/video.json --with-frames --skip-report --frames-output /tmp/frames_manifest.json --multimodal-output /tmp/multimodal_segments.json
+python3 scripts/render_multimodal_timeline.py --segments /tmp/multimodal_segments.json --output /tmp/video_timeline.html
 ```
 
 ### 2. Read the metadata before summarizing
@@ -94,10 +99,13 @@ When the user asks for more detail, expand with:
 - This skill works on individual YouTube video URLs, not channels or playlists.
 - The primary browser path is transcript-panel based, so it still depends on YouTube exposing a transcript in the watch page.
 - If the video has no accessible captions, do not fabricate a summary.
-- If the user asks for visual analysis, explain that this skill is transcript-grounded and only covers spoken or captioned content.
+- Visual evidence mode extracts frames and builds multimodal segment artifacts, but it does not yet make visual claims in the final report unless a later multimodal model step is added.
 - `--translate-to` is best-effort and only fully supported on the direct API path. If the browser path is used, translate during summarization instead.
 
 ## Scripts
 
 - `scripts/fetch_youtube_transcript.py`: Fetch captions, normalize them into plain text plus timestamped segments, prefer browser transcript extraction in the main flow, and use the direct API path as the secondary strategy.
+- `scripts/extract_video_frames.py`: Download or read a video, extract timed and scene-change frames with `scene_score`, pHash deduplicate them, and write `frames_manifest.json`.
+- `scripts/build_multimodal_segments.py`: Merge transcript windows and kept frame references into `multimodal_segments.json`.
+- `scripts/render_multimodal_timeline.py`: Render `multimodal_segments.json` as a local HTML timeline with captions and kept frames.
 - `scripts/youtube_to_chinese_report.py`: One-command wrapper that fetches the transcript and uses `codex exec` with a JSON schema to generate `中文摘要` plus `提到的内容`.
