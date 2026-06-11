@@ -1,5 +1,6 @@
 __pycache__/
 *.pyc
 
+.vendor-install.lock
 scripts/_vendor/
 scripts/.vendor-install.lock
