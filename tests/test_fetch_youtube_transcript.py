@@ -9,11 +9,43 @@ from unittest.mock import patch
 TESTS_DIR = Path(__file__).resolve().parent
 SKILL_DIR = TESTS_DIR.parent
 SCRIPT_PATH = SKILL_DIR / "scripts" / "fetch_youtube_transcript.py"
+SKILL_PATH = SKILL_DIR / "SKILL.md"
+README_PATH = SKILL_DIR / "README.md"
 
 spec = importlib.util.spec_from_file_location("fetch_youtube_transcript", SCRIPT_PATH)
 module = importlib.util.module_from_spec(spec)
 assert spec and spec.loader
 spec.loader.exec_module(module)
+
+
+def provider_result(provider: str, text: str = "hello") -> dict:
+    segments = [
+        {
+            "text": text,
+            "start": 0.0,
+            "duration": 2.0,
+            "end": 2.0,
+            "timestamp": "00:00",
+        }
+    ]
+    return {
+        "provider": provider,
+        "video_id": "abc123def45",
+        "source_url": "https://www.youtube.com/watch?v=abc123def45",
+        "title": "Captions",
+        "language_code": "en",
+        "is_generated": False,
+        "used_language_fallback": False,
+        "translated_to": None,
+        "source_format": "youtube_transcript_api" if provider == "api" else "vtt",
+        "segment_count": 1,
+        "duration_seconds": 2.0,
+        "chapters": [],
+        "text": text,
+        "segments": segments,
+        "notes": [],
+        "raw_metadata": {},
+    }
 
 
 class CaptionV2PipelineTests(unittest.TestCase):
@@ -65,48 +97,92 @@ class CaptionV2PipelineTests(unittest.TestCase):
         self.assertEqual(0.0, finalized[1]["duration"])
         self.assertEqual(4.0, finalized[1]["end"])
 
-    def test_pipeline_fetches_captions_through_the_single_direct_api(self) -> None:
-        provider_result = {
-            "provider": "api",
-            "video_id": "abc123def45",
-            "source_url": "https://www.youtube.com/watch?v=abc123def45",
-            "title": "Direct captions",
-            "language_code": "en",
-            "is_generated": False,
-            "used_language_fallback": False,
-            "translated_to": None,
-            "source_format": "youtube_transcript_api",
-            "segment_count": 1,
-            "duration_seconds": 2.0,
-            "chapters": [],
-            "text": "hello",
-            "segments": [
-                {
-                    "text": "hello",
-                    "start": 0.0,
-                    "duration": 2.0,
-                    "end": 2.0,
-                    "timestamp": "00:00",
-                }
-            ],
-            "notes": ["Caption was extracted with youtube-transcript-api."],
-            "raw_metadata": {},
-        }
+    def test_pipeline_prefers_api_without_calling_yt_dlp(self) -> None:
+        with patch.object(module, "fetch_title", return_value="Captions"):
+            with patch.object(module, "fetch_via_api", return_value=provider_result("api")):
+                with patch.object(module, "fetch_via_yt_dlp") as fallback:
+                    payload = module.run_caption_pipeline(
+                        video="https://www.youtube.com/watch?v=abc123def45",
+                        requested_languages=["en"],
+                        translate_to=None,
+                        preserve_formatting=False,
+                        chunk_seconds=90.0,
+                    )
 
-        with patch.object(module, "fetch_title", return_value="Direct captions"):
-            with patch.object(module, "fetch_via_api", return_value=provider_result):
-                payload = module.run_caption_pipeline(
-                    video="https://www.youtube.com/watch?v=abc123def45",
-                    requested_languages=["en"],
-                    translate_to=None,
-                    preserve_formatting=False,
-                    chunk_seconds=90.0,
-                )
-
+        fallback.assert_not_called()
         self.assertEqual("caption.v2", payload["schema_version"])
         self.assertEqual("api", payload["selected_result"]["provider"])
-        self.assertEqual(["api"], payload["requested"]["providers"])
+        self.assertEqual(["api", "yt-dlp"], payload["requested"]["providers"])
+        self.assertEqual(["api"], [item["provider"] for item in payload["attempts"]])
         self.assertEqual("hello", payload["selected_result"]["text"])
+
+    def test_pipeline_falls_back_to_yt_dlp_after_api_error(self) -> None:
+        with patch.object(module, "fetch_title", return_value="Captions"):
+            with patch.object(module, "fetch_via_api", side_effect=RuntimeError("api blocked")):
+                with patch.object(
+                    module,
+                    "fetch_via_yt_dlp",
+                    return_value=provider_result("yt-dlp"),
+                ) as fallback:
+                    payload = module.run_caption_pipeline(
+                        video="abc123def45",
+                        requested_languages=["en"],
+                        translate_to=None,
+                        preserve_formatting=False,
+                        chunk_seconds=90.0,
+                    )
+
+        fallback.assert_called_once()
+        self.assertEqual("yt-dlp", payload["selected_result"]["provider"])
+        self.assertEqual(
+            ["failed", "success"],
+            [item["status"] for item in payload["attempts"]],
+        )
+        self.assertEqual(
+            ["api", "yt-dlp"],
+            [item["provider"] for item in payload["attempts"]],
+        )
+        self.assertEqual("yt-dlp", payload["chunks"][0]["source_provider"])
+
+    def test_pipeline_falls_back_after_empty_api_result(self) -> None:
+        empty = {"provider": "api", "segments": [], "text": ""}
+        with patch.object(module, "fetch_title", return_value=None):
+            with patch.object(module, "fetch_via_api", return_value=empty):
+                with patch.object(
+                    module,
+                    "fetch_via_yt_dlp",
+                    return_value=provider_result("yt-dlp"),
+                ):
+                    payload = module.run_caption_pipeline(
+                        video="abc123def45",
+                        requested_languages=["en"],
+                        translate_to=None,
+                        preserve_formatting=False,
+                        chunk_seconds=90.0,
+                    )
+
+        self.assertEqual("yt-dlp", payload["selection"]["provider"])
+        self.assertEqual("failed", payload["attempts"][0]["status"])
+
+    def test_pipeline_reports_both_provider_failures(self) -> None:
+        with patch.object(module, "fetch_title", return_value=None):
+            with patch.object(module, "fetch_via_api", side_effect=RuntimeError("api blocked")):
+                with patch.object(
+                    module,
+                    "fetch_via_yt_dlp",
+                    side_effect=RuntimeError("yt-dlp blocked"),
+                ):
+                    with self.assertRaisesRegex(
+                        module.UserError,
+                        "api.*api blocked.*yt-dlp.*yt-dlp blocked",
+                    ):
+                        module.run_caption_pipeline(
+                            video="abc123def45",
+                            requested_languages=["en"],
+                            translate_to=None,
+                            preserve_formatting=False,
+                            chunk_seconds=90.0,
+                        )
 
     def test_build_chunks_uses_time_windows_and_skips_empty_text(self) -> None:
         segments = [
@@ -151,51 +227,148 @@ class CaptionV2PipelineTests(unittest.TestCase):
         self.assertIs(chosen, generated)
         self.assertTrue(used_fallback)
 
-    def test_pipeline_rejects_empty_caption_result(self) -> None:
-        empty = {
-            "provider": "api",
-            "video_id": "abc123def45",
-            "source_url": "https://www.youtube.com/watch?v=abc123def45",
-            "title": "Empty",
-            "segments": [],
-            "text": "",
+    def test_choose_yt_dlp_caption_prefers_requested_manual_track(self) -> None:
+        info = {
+            "subtitles": {
+                "en": [{"ext": "vtt", "url": "https://example.test/manual"}],
+            },
+            "automatic_captions": {
+                "en": [{"ext": "vtt", "url": "https://example.test/auto"}],
+            },
         }
-        with patch.object(module, "fetch_title", return_value="Empty"):
-            with patch.object(module, "fetch_via_api", return_value=empty):
-                with self.assertRaisesRegex(module.UserError, "no usable caption text"):
-                    module.run_caption_pipeline(
-                        video="abc123def45",
-                        requested_languages=["en"],
-                        translate_to=None,
-                        preserve_formatting=False,
-                        chunk_seconds=90.0,
-                    )
+        track, generated, language_fallback = module.choose_yt_dlp_caption(info, ["en"])
 
-    def test_api_error_is_mapped_to_stable_user_error(self) -> None:
-        with patch.object(module, "fetch_title", return_value=None):
-            with patch.object(module, "fetch_via_api", side_effect=type("TranscriptsDisabled", (Exception,), {})()):
-                with self.assertRaisesRegex(module.UserError, "no captions enabled"):
-                    module.run_caption_pipeline(
-                        video="abc123def45",
-                        requested_languages=["en"],
-                        translate_to=None,
-                        preserve_formatting=False,
-                        chunk_seconds=90.0,
-                    )
+        self.assertEqual("https://example.test/manual", track["url"])
+        self.assertEqual("en", track["language_code"])
+        self.assertFalse(generated)
+        self.assertFalse(language_fallback)
 
-    def test_caption_module_contains_no_alternate_caption_paths(self) -> None:
+    def test_choose_yt_dlp_caption_falls_back_to_other_manual_language(self) -> None:
+        info = {
+            "subtitles": {
+                "fr": [{"ext": "vtt", "url": "https://example.test/manual-fr"}],
+            },
+            "automatic_captions": {
+                "en": [{"ext": "vtt", "url": "https://example.test/auto-en"}],
+            },
+        }
+        track, generated, language_fallback = module.choose_yt_dlp_caption(info, ["en"])
+
+        self.assertEqual("fr", track["language_code"])
+        self.assertFalse(generated)
+        self.assertTrue(language_fallback)
+
+    def test_choose_yt_dlp_caption_uses_requested_generated_track(self) -> None:
+        info = {
+            "subtitles": {},
+            "automatic_captions": {
+                "en": [{"ext": "vtt", "url": "https://example.test/auto-en"}],
+            },
+        }
+        track, generated, language_fallback = module.choose_yt_dlp_caption(info, ["en"])
+
+        self.assertEqual("en", track["language_code"])
+        self.assertTrue(generated)
+        self.assertFalse(language_fallback)
+
+    def test_choose_yt_dlp_caption_rejects_missing_tracks(self) -> None:
+        with self.assertRaisesRegex(
+            module.UserError,
+            "No manual or automatic captions are available from yt-dlp",
+        ):
+            module.choose_yt_dlp_caption(
+                {"subtitles": {}, "automatic_captions": {}},
+                ["en"],
+            )
+
+    def test_parse_vtt_normalizes_timestamped_cues(self) -> None:
+        raw_vtt = """WEBVTT
+
+00:00:00.000 --> 00:00:02.500 align:start
+<c>Hello</c> &amp; welcome
+
+00:00:02.500 --> 00:00:05.000
+Next line
+"""
+        segments = module.parse_vtt(raw_vtt)
+
+        self.assertEqual(2, len(segments))
+        self.assertEqual("Hello & welcome", segments[0]["text"])
+        self.assertEqual(0.0, segments[0]["start"])
+        self.assertEqual(2.5, segments[0]["duration"])
+
+    def test_yt_dlp_provider_uses_subtitle_only_options(self) -> None:
+        captured = {}
+
+        class FakeYoutubeDL:
+            def __init__(self, options):
+                captured["options"] = options
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+            def extract_info(self, source_url, download):
+                captured["source_url"] = source_url
+                captured["download"] = download
+                return {
+                    "title": "Captions",
+                    "duration": 5.0,
+                    "subtitles": {
+                        "en": [
+                            {
+                                "ext": "vtt",
+                                "url": "https://example.test/manual",
+                                "name": "English",
+                            }
+                        ]
+                    },
+                    "automatic_captions": {},
+                }
+
+        class FakeYtDlp:
+            YoutubeDL = FakeYoutubeDL
+
+        with patch.object(module, "ensure_dependency", return_value=FakeYtDlp):
+            with patch.object(
+                module,
+                "download_caption_text",
+                return_value="WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nhello\n",
+            ):
+                result = module.fetch_via_yt_dlp(
+                    video_id="abc123def45",
+                    source_url="https://www.youtube.com/watch?v=abc123def45",
+                    title=None,
+                    requested_languages=["en"],
+                    translate_to="zh-Hans",
+                    preserve_formatting=False,
+                )
+
+        options = captured["options"]
+        self.assertIs(options["skip_download"], True)
+        self.assertIs(options["writesubtitles"], True)
+        self.assertIs(options["writeautomaticsub"], True)
+        self.assertNotIn("format", options)
+        self.assertNotIn("outtmpl", options)
+        self.assertNotIn("postprocessors", options)
+        self.assertIs(captured["download"], False)
+        self.assertEqual("yt-dlp", result["provider"])
+        self.assertIsNone(result["translated_to"])
+
+    def test_caption_module_contains_no_browser_media_or_asr_caption_path(self) -> None:
         source = SCRIPT_PATH.read_text(encoding="utf-8").lower()
         for forbidden in (
             "playwright",
-            "npx",
             "fetch_via_browser",
-            "yt_dlp",
-            "yt-dlp",
+            "computer-use",
             "download_audio",
             "faster_whisper",
             "fetch_via_asr",
             "cookies-from-browser",
             "browser_cookie",
+            "ffmpegextractaudio",
         ):
             self.assertNotIn(forbidden, source)
 
@@ -210,6 +383,18 @@ class CaptionV2PipelineTests(unittest.TestCase):
         self.assertNotIn("--strategy", completed.stdout)
         self.assertNotIn("--providers", completed.stdout)
         self.assertNotIn("--asr-model", completed.stdout)
+
+    def test_skill_docs_define_only_api_then_yt_dlp_caption_acquisition(self) -> None:
+        for path in (SKILL_PATH, README_PATH):
+            source = path.read_text(encoding="utf-8")
+            lowered = source.lower()
+            self.assertIn("api -> yt-dlp", lowered)
+            self.assertIn("skip_download=true", lowered)
+            self.assertIn("computer-use", lowered)
+            self.assertIn("browser cookies", lowered)
+            self.assertIn("speech recognition", lowered)
+            self.assertNotIn("caption acquisition has exactly one implementation", lowered)
+            self.assertNotIn("caption acquisition has one implementation", lowered)
 
     def test_render_chunks_reads_v2_artifact_chunks(self) -> None:
         payload = {"chunks": [{"text": "chunk"}], "selected_result": {"text": "all", "segments": []}}

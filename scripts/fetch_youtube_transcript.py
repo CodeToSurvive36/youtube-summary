@@ -33,10 +33,15 @@ DEFAULT_LANGS = [
 ]
 DEPENDENCIES = {
     "youtube_transcript_api": "youtube-transcript-api==1.2.4",
+    "yt_dlp": "yt-dlp>=2025.1.0",
 }
 VENDOR_DIR = Path(__file__).resolve().parent / "_vendor"
 INSTALL_LOCK_PATH = VENDOR_DIR.parent / ".vendor-install.lock"
 VIDEO_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{11}$")
+VTT_TIMESTAMP_RE = re.compile(
+    r"(?P<start>\d{2}:\d{2}:\d{2}\.\d{3}|\d{2}:\d{2}\.\d{3})\s+-->\s+"
+    r"(?P<end>\d{2}:\d{2}:\d{2}\.\d{3}|\d{2}:\d{2}\.\d{3})"
+)
 TAG_RE = re.compile(r"<[^>]+>")
 _DIRECT_API_INSTANCE: Any | None = None
 
@@ -294,6 +299,33 @@ def join_transcript_text(segments: list[dict[str, Any]]) -> str:
     return "\n".join(segment["text"] for segment in segments)
 
 
+def parse_vtt(vtt_text: str) -> list[dict[str, Any]]:
+    segments: list[dict[str, Any]] = []
+    lines = vtt_text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    index = 0
+    while index < len(lines):
+        timestamp_match = VTT_TIMESTAMP_RE.search(lines[index].strip())
+        if not timestamp_match:
+            index += 1
+            continue
+
+        start = parse_timestamp(timestamp_match.group("start"))
+        end = parse_timestamp(timestamp_match.group("end"))
+        index += 1
+        text_parts: list[str] = []
+        while index < len(lines) and lines[index].strip():
+            text_parts.append(lines[index].strip())
+            index += 1
+        text = clean_caption_text(" ".join(text_parts))
+        if text:
+            segments.append({"text": text, "start": start, "end": end})
+        index += 1
+
+    if not segments:
+        raise UserError("VTT caption file did not contain any parseable segments.")
+    return normalize_segments(segments)
+
+
 def build_chunks(
     segments: list[dict[str, Any]],
     chunk_seconds: float,
@@ -421,6 +453,98 @@ def fetch_with_optional_translation(
     return transcript.fetch(preserve_formatting=preserve_formatting)
 
 
+def choose_yt_dlp_track(tracks: list[dict[str, Any]]) -> dict[str, Any]:
+    if not isinstance(tracks, list):
+        raise UserError("yt-dlp caption tracks must be a list.")
+    for extension in ("vtt", "webvtt"):
+        for track in tracks:
+            if str(track.get("ext", "")).lower() == extension and track.get("url"):
+                return dict(track)
+    raise UserError("yt-dlp did not expose a supported VTT caption track.")
+
+
+def choose_yt_dlp_caption(
+    info: dict[str, Any],
+    requested_languages: list[str],
+) -> tuple[dict[str, Any], bool, bool]:
+    subtitles = info.get("subtitles") or {}
+    automatic_captions = info.get("automatic_captions") or {}
+
+    for captions, is_generated in ((subtitles, False), (automatic_captions, True)):
+        for language in requested_languages:
+            tracks = captions.get(language)
+            if tracks:
+                track = choose_yt_dlp_track(tracks)
+                track["language_code"] = language
+                return track, is_generated, False
+
+        for language, tracks in captions.items():
+            if tracks:
+                track = choose_yt_dlp_track(tracks)
+                track["language_code"] = language
+                return track, is_generated, True
+
+    raise UserError("No manual or automatic captions are available from yt-dlp.")
+
+
+def download_caption_text(track: dict[str, Any]) -> str:
+    url = track.get("url")
+    if not isinstance(url, str) or not url:
+        raise UserError("yt-dlp caption track did not contain a URL.")
+    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(request, timeout=60) as response:
+        return response.read().decode("utf-8", errors="replace")
+
+
+def fetch_via_yt_dlp(
+    *,
+    video_id: str,
+    source_url: str,
+    title: str | None,
+    requested_languages: list[str],
+    translate_to: str | None,
+    preserve_formatting: bool,
+) -> dict[str, Any]:
+    del translate_to, preserve_formatting
+    yt_dlp = ensure_dependency("yt_dlp")
+    options = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "writesubtitles": True,
+        "writeautomaticsub": True,
+    }
+    with yt_dlp.YoutubeDL(options) as ydl:
+        info = ydl.extract_info(source_url, download=False)
+    if not isinstance(info, dict):
+        raise UserError("yt-dlp did not return video caption metadata.")
+
+    track, is_generated, used_language_fallback = choose_yt_dlp_caption(
+        info,
+        requested_languages,
+    )
+    segments = parse_vtt(download_caption_text(track))
+    return build_provider_result(
+        provider="yt-dlp",
+        video_id=video_id,
+        source_url=source_url,
+        title=info.get("title") or title,
+        segments=segments,
+        chapters=[],
+        language_code=track.get("language_code"),
+        is_generated=is_generated,
+        used_language_fallback=used_language_fallback,
+        translated_to=None,
+        source_format=str(track.get("ext", "")).lower(),
+        notes=["Caption was extracted from a subtitle track exposed by yt-dlp."],
+        raw_metadata={
+            "format": track.get("ext"),
+            "name": track.get("name"),
+            "duration": info.get("duration"),
+        },
+    )
+
+
 def fetch_via_api(
     *,
     video_id: str,
@@ -533,10 +657,11 @@ def build_caption_v2_payload(
     translate_to: str | None,
     chunk_seconds: float,
     selected: dict[str, Any],
-    attempt: dict[str, Any],
+    attempts: list[dict[str, Any]],
 ) -> dict[str, Any]:
     quality = quality_summary(selected["segments"], selected.get("is_generated"))
-    chunks = build_chunks(selected["segments"], chunk_seconds, "api")
+    selected_provider = selected["provider"]
+    chunks = build_chunks(selected["segments"], chunk_seconds, selected_provider)
     notes = list(selected.get("notes", []))
     if selected.get("is_generated"):
         notes.append("Selected caption is generated by YouTube; review important claims carefully.")
@@ -554,10 +679,10 @@ def build_caption_v2_payload(
         "requested": {
             "languages": requested_languages,
             "translate_to": translate_to,
-            "providers": ["api"],
+            "providers": ["api", "yt-dlp"],
             "chunk_seconds": chunk_seconds,
         },
-        "attempts": [attempt],
+        "attempts": attempts,
         "selected_result": {
             key: selected[key]
             for key in (
@@ -578,8 +703,8 @@ def build_caption_v2_payload(
         },
         "chunks": chunks,
         "selection": {
-            "provider": "api",
-            "reason": "Selected the only approved direct YouTube caption provider.",
+            "provider": selected_provider,
+            "reason": f"Selected {selected_provider} as the first provider with usable captions.",
             "quality": quality,
         },
         "notes": notes,
@@ -597,31 +722,56 @@ def run_caption_pipeline(
     video_id = extract_video_id(video)
     source_url = canonical_url(video_id)
     title = fetch_title(source_url)
-    started = time.monotonic()
-    try:
-        selected = fetch_via_api(
-            video_id=video_id,
-            source_url=source_url,
-            title=title,
-            requested_languages=requested_languages,
-            translate_to=translate_to,
-            preserve_formatting=preserve_formatting,
+    attempts: list[dict[str, Any]] = []
+    selected: dict[str, Any] | None = None
+    providers = (("api", fetch_via_api), ("yt-dlp", fetch_via_yt_dlp))
+
+    for provider, fetcher in providers:
+        started = time.monotonic()
+        try:
+            result = fetcher(
+                video_id=video_id,
+                source_url=source_url,
+                title=title,
+                requested_languages=requested_languages,
+                translate_to=translate_to,
+                preserve_formatting=preserve_formatting,
+            )
+            if not result.get("segments") or not str(result.get("text", "")).strip():
+                raise UserError(f"{provider} returned no usable caption text.")
+        except Exception as exc:
+            mapped = map_api_error(exc) if provider == "api" else exc
+            attempts.append(
+                {
+                    "provider": provider,
+                    "status": "failed",
+                    "elapsed_seconds": round(time.monotonic() - started, 3),
+                    "error": describe_error(mapped),
+                }
+            )
+            continue
+
+        selected = result
+        attempts.append(
+            {
+                "provider": provider,
+                "status": "success",
+                "elapsed_seconds": round(time.monotonic() - started, 3),
+                "quality": quality_summary(result["segments"], result.get("is_generated")),
+                "language_code": result.get("language_code"),
+                "is_generated": result.get("is_generated"),
+                "source_format": result.get("source_format"),
+            }
         )
-    except Exception as exc:
-        raise map_api_error(exc) from exc
+        break
 
-    if not selected.get("segments") or not str(selected.get("text", "")).strip():
-        raise UserError("The selected YouTube caption track returned no usable caption text.")
+    if selected is None:
+        failures = "; ".join(
+            f"{attempt['provider']}: {attempt.get('error', 'unknown error')}"
+            for attempt in attempts
+        )
+        raise UserError(f"All caption providers failed: {failures}")
 
-    attempt = {
-        "provider": "api",
-        "status": "success",
-        "elapsed_seconds": round(time.monotonic() - started, 3),
-        "quality": quality_summary(selected["segments"], selected.get("is_generated")),
-        "language_code": selected.get("language_code"),
-        "is_generated": selected.get("is_generated"),
-        "source_format": selected.get("source_format"),
-    }
     return build_caption_v2_payload(
         video_id=video_id,
         source_url=source_url,
@@ -630,7 +780,7 @@ def run_caption_pipeline(
         translate_to=translate_to,
         chunk_seconds=chunk_seconds,
         selected=selected,
-        attempt=attempt,
+        attempts=attempts,
     )
 
 

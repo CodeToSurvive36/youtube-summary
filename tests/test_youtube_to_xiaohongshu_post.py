@@ -29,9 +29,12 @@ class XiaohongshuPostTests(unittest.TestCase):
         self.assertIn("only when the user explicitly asks for Xiaohongshu", skill_text)
         self.assertIn("小红书", skill_text)
 
-    def test_fetch_wrapper_does_not_forward_a_caption_strategy(self) -> None:
+    def test_fetch_wrapper_accepts_yt_dlp_result_without_provider_controls(self) -> None:
         args = SimpleNamespace(video="abc123def45", langs="en")
-        payload = {"schema_version": "caption.v2"}
+        payload = {
+            "schema_version": "caption.v2",
+            "selected_result": {"provider": "yt-dlp", "text": "captions"},
+        }
         with tempfile.TemporaryDirectory() as temp_name:
             output = Path(temp_name) / "caption.json"
 
@@ -45,6 +48,7 @@ class XiaohongshuPostTests(unittest.TestCase):
             with patch.object(module.subprocess, "run", side_effect=fake_run):
                 result = module.run_fetch_step(args, output)
         self.assertEqual(payload, result)
+        self.assertEqual("yt-dlp", result["selected_result"]["provider"])
 
     def test_cleaned_transcript_artifact_keeps_metadata_text_chunks_and_notes(self) -> None:
         caption = {

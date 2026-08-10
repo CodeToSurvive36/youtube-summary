@@ -99,6 +99,33 @@ class ManifestValidationTests(unittest.TestCase):
         self.assertEqual(0, results["summary"]["failed"])
         self.assertEqual("api", results["results"][0]["provider"])
 
+    def test_validation_accepts_yt_dlp_selected_results(self) -> None:
+        manifest = build_manifest()
+
+        def fake_fetcher(**kwargs):
+            video_id = module.fetch_module.extract_video_id(kwargs["video"])
+            entry = next(item for item in manifest["entries"] if item["video_id"] == video_id)
+            group = entry["group"]
+            language = "fr" if group == "non_english_manual" else "en"
+            is_generated = group == "generated"
+            text = "x" * (20_001 if group == "long" else 500)
+            duration = 240.0 if group == "short" else 600.0
+            return {
+                "schema_version": "caption.v2",
+                "selected_result": {
+                    "provider": "yt-dlp",
+                    "language_code": language,
+                    "is_generated": is_generated,
+                    "text": text,
+                    "segment_count": 2,
+                    "duration_seconds": duration,
+                },
+            }
+
+        results = module.run_validation(manifest, fetcher=fake_fetcher)
+        self.assertEqual(25, results["summary"]["passed"])
+        self.assertEqual("yt-dlp", results["results"][0]["provider"])
+
     def test_category_mismatch_is_a_failed_result(self) -> None:
         manifest = build_manifest()
 
@@ -138,7 +165,7 @@ class ManifestValidationTests(unittest.TestCase):
         self.assertEqual(1, results["summary"]["attempted"])
         self.assertEqual(24, results["summary"]["not_attempted"])
 
-    def test_resume_reuses_only_previously_passed_direct_results(self) -> None:
+    def test_resume_reuses_only_previously_passed_approved_provider_results(self) -> None:
         manifest = build_manifest()
         calls = []
 
@@ -169,6 +196,30 @@ class ManifestValidationTests(unittest.TestCase):
         )
         self.assertEqual(24, len(calls))
         self.assertEqual(25, resumed["summary"]["passed"])
+
+    def test_resume_reuses_a_previously_passed_yt_dlp_result(self) -> None:
+        manifest = build_manifest()
+        existing = {
+            "video_id": manifest["entries"][0]["video_id"],
+            "group": manifest["entries"][0]["group"],
+            "status": "passed",
+            "provider": "yt-dlp",
+            "page_caption_confirmed": True,
+        }
+        calls = []
+
+        def failing_fetcher(**kwargs):
+            calls.append(kwargs["video"])
+            raise AssertionError("resumed approved result should not be fetched")
+
+        resumed = module.run_validation(
+            manifest,
+            fetcher=failing_fetcher,
+            existing_results=[existing],
+            stop_on_failure=True,
+        )
+        self.assertEqual(1, len(calls))
+        self.assertTrue(resumed["results"][0]["resumed"])
 
 
 if __name__ == "__main__":

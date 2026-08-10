@@ -21,6 +21,7 @@ GROUPS = (
 )
 EXPECTED_PER_GROUP = 5
 EXPECTED_TOTAL = len(GROUPS) * EXPECTED_PER_GROUP
+APPROVED_PROVIDERS = {"api", "yt-dlp"}
 
 spec = importlib.util.spec_from_file_location("direct_caption_fetch", FETCH_SCRIPT)
 fetch_module = importlib.util.module_from_spec(spec)
@@ -114,8 +115,8 @@ def category_error(group: str, selected: dict[str, Any]) -> str | None:
     segment_count = int(selected.get("segment_count") or 0)
     duration = float(selected.get("duration_seconds") or 0.0)
 
-    if provider != "api":
-        return "selected provider was not the sole direct API provider"
+    if provider not in APPROVED_PROVIDERS:
+        return "selected provider was not an approved direct caption provider"
     if not text.strip() or segment_count <= 0:
         return "direct caption result was empty"
     if group == "english_manual" and (is_generated is not False or not language_code.startswith("en")):
@@ -152,7 +153,7 @@ def run_validation(
         for result in (existing_results or [])
         if isinstance(result, dict)
         and result.get("status") == "passed"
-        and result.get("provider") == "api"
+        and result.get("provider") in APPROVED_PROVIDERS
     }
     network_attempts = 0
     reused = 0
@@ -226,7 +227,7 @@ def run_validation(
     return {
         "schema_version": "youtube-caption-validation-results.v1",
         "validated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "caption_source": "youtube-transcript-api direct YouTube network access only",
+        "caption_source": "direct YouTube caption access through api then yt-dlp",
         "summary": {
             "total": EXPECTED_TOTAL,
             "attempted": len(results),

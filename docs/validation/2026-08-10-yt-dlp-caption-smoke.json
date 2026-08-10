@@ -1,0 +1,40 @@
+{
+  "schema_version": "youtube-caption-yt-dlp-smoke.v1",
+  "validated_at": "2026-08-10T10:29:47+08:00",
+  "status": "passed",
+  "video": {
+    "video_id": "9VNG0h4pLh0",
+    "source_url": "https://www.youtube.com/watch?v=9VNG0h4pLh0",
+    "title": "Never Trust An LLM"
+  },
+  "provider": "yt-dlp",
+  "yt_dlp_version": "2026.06.09",
+  "caption_result": {
+    "language_code": "en",
+    "is_generated": true,
+    "used_language_fallback": false,
+    "translated_to": null,
+    "source_format": "vtt",
+    "segment_count": 862,
+    "duration_seconds": 841.92,
+    "caption_character_count": 49127
+  },
+  "acquisition_contract": {
+    "entry_point": "fetch_via_yt_dlp",
+    "extract_info_download": false,
+    "skip_download": true,
+    "writesubtitles": true,
+    "writeautomaticsub": true,
+    "video_or_audio_downloaded": false,
+    "caption_text_persisted": false,
+    "browser_or_computer_use": false,
+    "browser_cookies_used": false,
+    "speech_recognition_used": false,
+    "additional_caption_provider_used": false
+  },
+  "network_route": {
+    "temporary_route": "美国 06 (家宽)",
+    "restored_route": "日本 04",
+    "rate_limit_observed": false
+  }
+}

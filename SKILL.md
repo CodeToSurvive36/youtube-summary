@@ -21,10 +21,12 @@ Use this skill when the user provides a YouTube video URL and wants an answer gr
 ### 1. Fetch directly from YouTube
 
 - Run the bundled script from the skill folder.
-- Caption acquisition has exactly one implementation: `youtube-transcript-api==1.2.4` connecting to YouTube's network interfaces.
-- The script auto-installs `youtube-transcript-api` into `scripts/_vendor/` on first use, so no global Python package install is required.
-- Do not obtain captions from a visible transcript panel, browser state, browser cookies, `yt-dlp`, downloaded media, speech recognition, or any alternate source.
-- A fetch failure remains a failure. Do not replace missing captions with a title, description, page text, audio transcription, or fabricated content.
+- Caption acquisition uses the fixed order `api -> yt-dlp`: first try `youtube-transcript-api==1.2.4`, then try `yt-dlp>=2025.1.0` once only when the API fails or returns no usable caption text.
+- The script auto-installs both dependencies into `scripts/_vendor/` on first use, so no global Python package install is required.
+- The `yt-dlp` provider reads only `subtitles`, `automatic_captions`, and the selected caption-track URL. It sets `skip_download=True` and `download=False`; it does not select or download video or audio.
+- Caption acquisition never uses a visible transcript panel, browser state, browser cookies, browser automation, `computer-use`, downloaded media, or speech recognition. It never invokes a third caption source.
+- If both approved providers fail, the fetch fails with both reasons. Do not replace missing captions with a title, description, page text, audio transcription, or fabricated content.
+- Do not add or use provider-selection arguments. The order is fixed and is not user-configurable.
 
 Common commands:
 
@@ -39,7 +41,8 @@ python3 scripts/render_multimodal_timeline.py --segments /tmp/multimodal_segment
 
 ### 2. Read the metadata before summarizing
 
-- Require `schema_version` to be `caption.v2` and `selected_result.provider` to be `api`.
+- Require `schema_version` to be `caption.v2` and `selected_result.provider` to be `api` or `yt-dlp`.
+- Read `attempts` to distinguish an API success from a successful `yt-dlp` fallback. When API succeeds, no `yt-dlp` attempt is made.
 - Check `notes` for caption caveats.
 - Report `is_generated` when it is available and `true`, because auto-captions can contain recognition errors.
 - If `used_language_fallback` is `true`, mention that the script fell back to the best available caption track.
@@ -120,15 +123,15 @@ The final rewrite step must not read the full transcript directly. It must not i
 - This skill works on individual YouTube video URLs, not channels or playlists.
 - If the video has no accessible captions, do not fabricate a summary.
 - Visual evidence mode extracts frames and builds multimodal segment artifacts, but it does not yet make visual claims in the final report unless a later multimodal model step is added.
-- `--translate-to` uses only translation exposed by the selected YouTube caption track. Response translation normally happens during report generation.
+- `--translate-to` uses only translation exposed through the API provider. The `yt-dlp` fallback preserves its selected source-caption language. Response translation normally happens during report generation, so always answer in the user's requested language or the current conversation language.
 - Xiaohongshu output is Markdown-first and should be used only for explicit 小红书文案 or 小红书笔记 requests.
 
 ## Scripts
 
-- `scripts/fetch_youtube_transcript.py`: Fetch captions only through `youtube-transcript-api`, then normalize them into plain text, timestamped segments, and chunks.
+- `scripts/fetch_youtube_transcript.py`: Fetch captions in the fixed `api -> yt-dlp` order, then normalize the selected caption track into plain text, timestamped segments, and chunks.
 - `scripts/extract_video_frames.py`: Download or read a video, extract timed and scene-change frames with `scene_score`, pHash deduplicate them, and write `frames_manifest.json`.
 - `scripts/build_multimodal_segments.py`: Merge transcript windows and kept frame references into `multimodal_segments.json`.
 - `scripts/render_multimodal_timeline.py`: Render `multimodal_segments.json` as a local HTML timeline with captions and kept frames.
 - `scripts/youtube_to_chinese_report.py`: One-command wrapper that fetches the transcript and generates `summary` plus `mentioned_items` in `--response-language`.
-- `scripts/validate_real_youtube_captions.py`: Validate a 25-video page-audited manifest through the same direct-only caption entry point.
+- `scripts/validate_real_youtube_captions.py`: Validate a 25-video page-audited manifest through the same fixed two-provider caption entry point.
 - `scripts/youtube_to_xiaohongshu_post.py`: Explicit Xiaohongshu-only wrapper that fetches or reuses a transcript, saves optional raw/cleaned/structured artifacts, uses two Codex schema-constrained steps, and renders the final 小红书 Markdown post.

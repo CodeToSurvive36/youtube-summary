@@ -4,14 +4,16 @@ A Codex skill for turning accessible YouTube captions into transcript-grounded s
 
 ## Direct Caption Acquisition
 
-Caption acquisition has one implementation: `youtube-transcript-api==1.2.4` connects directly to YouTube's network interfaces. The caption command does not use a visible transcript panel, browser state, browser cookies, `yt-dlp`, downloaded audio, or speech recognition, and it does not substitute another source when YouTube rejects the request.
+Caption acquisition uses the fixed order `api -> yt-dlp`. It first calls `youtube-transcript-api==1.2.4`; only after an API error or empty result does it call `yt-dlp>=2025.1.0` once. The fallback reads only YouTube's `subtitles` or `automatic_captions` metadata and the selected caption-track URL. Its options include `skip_download=True` and `download=False`, with no video or audio format selection.
+
+The caption command does not use a visible transcript panel, browser state, browser cookies, browser automation, `computer-use`, downloaded media, speech recognition, or a third caption source. If both approved providers fail, it reports both failures instead of substituting a title, description, page text, audio transcription, or fabricated content. The provider order cannot be selected or reordered through command-line arguments.
 
 ```bash
 python3 scripts/fetch_youtube_transcript.py "https://www.youtube.com/watch?v=VIDEO_ID" \
   --output /tmp/youtube-transcript.json
 ```
 
-The resulting `caption.v2` artifact always records `selected_result.provider` as `api`, preserves the actual `language_code`, and records YouTube-generated captions with `is_generated: true`.
+The resulting `caption.v2` artifact records `requested.providers` as `["api", "yt-dlp"]`, every provider attempt in `attempts`, and the actual successful provider in `selected_result.provider`, `selection.provider`, and each chunk's `source_provider`. It preserves the actual `language_code` and records YouTube-generated captions with `is_generated: true`.
 
 ## What This Skill Can Do
 

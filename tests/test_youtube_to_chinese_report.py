@@ -32,9 +32,12 @@ class ReportLanguageTests(unittest.TestCase):
         rendered = module.render_markdown_report(report, "English")
         self.assertEqual("Summary\nA grounded summary.\n\nMentioned items\n- YouTube\n", rendered)
 
-    def test_fetch_wrapper_does_not_forward_a_caption_strategy(self) -> None:
+    def test_fetch_wrapper_accepts_yt_dlp_result_without_provider_controls(self) -> None:
         args = SimpleNamespace(video="abc123def45", langs="en")
-        payload = {"schema_version": "caption.v2"}
+        payload = {
+            "schema_version": "caption.v2",
+            "selected_result": {"provider": "yt-dlp", "text": "captions"},
+        }
         with tempfile.TemporaryDirectory() as temp_name:
             output = Path(temp_name) / "caption.json"
 
@@ -48,6 +51,7 @@ class ReportLanguageTests(unittest.TestCase):
             with patch.object(module.subprocess, "run", side_effect=fake_run):
                 result = module.run_fetch_step(args, output)
         self.assertEqual(payload, result)
+        self.assertEqual("yt-dlp", result["selected_result"]["provider"])
 
     def test_schema_requires_neutral_summary_field(self) -> None:
         schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
