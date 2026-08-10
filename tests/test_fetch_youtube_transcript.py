@@ -402,8 +402,6 @@ Next line
         self.assertIn("## English", source)
         self.assertIn("回复语言", source)
         self.assertIn("response language", lowered)
-        self.assertIn("小红书", source)
-        self.assertIn("Xiaohongshu", source)
         self.assertGreaterEqual(source.count("$youtube-caption-summary"), 6)
 
         for forbidden in (

@@ -19,7 +19,6 @@
 - 标出某个主题在视频中出现的位置，方便快速跳转。
 - 按用户指定的语言生成结果，不受原字幕语言限制。
 - 在用户明确要求时，结合视频画面补充上下文。
-- 在用户明确要求时，生成适合发布的小红书文案。
 
 ### 如何使用
 
@@ -53,13 +52,6 @@ https://www.youtube.com/watch?v=VIDEO_ID
 https://www.youtube.com/watch?v=VIDEO_ID
 ```
 
-生成小红书文案：
-
-```text
-使用 $youtube-caption-summary 根据这个视频生成一篇中文小红书笔记：
-https://www.youtube.com/watch?v=VIDEO_ID
-```
-
 ### 回复语言
 
 可以在请求中指定任意回复语言。如果没有指定，Skill 会使用当前对话语言。原字幕语言与最终回复语言相互独立。
@@ -90,7 +82,6 @@ https://www.youtube.com/watch?v=VIDEO_ID
 - Identify when a topic appears so the user can navigate to the relevant moment.
 - Return results in the requested language, independently of the source-caption language.
 - Include visual context when the user explicitly requests it.
-- Create Xiaohongshu copy when the user explicitly requests it.
 
 ### How to Use
 
@@ -121,13 +112,6 @@ Create timestamped key points:
 
 ```text
 Use $youtube-caption-summary to list the key conclusions from this video with their timestamps:
-https://www.youtube.com/watch?v=VIDEO_ID
-```
-
-Create Xiaohongshu copy:
-
-```text
-Use $youtube-caption-summary to create a Chinese Xiaohongshu post based on this video:
 https://www.youtube.com/watch?v=VIDEO_ID
 ```
 

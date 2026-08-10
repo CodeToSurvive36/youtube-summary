@@ -14,7 +14,6 @@ Use this skill when the user provides a YouTube video URL and wants an answer gr
 3. Use the report script when the user wants a summary plus mentioned items.
 4. Use the fetch script when you need raw `segments`, `chapters`, or transcript metadata.
 5. For visual evidence artifacts, run the report wrapper with `--with-frames`, or pass `--transcript-input` to reuse a transcript from a separate caption flow.
-6. Use `python3 scripts/youtube_to_xiaohongshu_post.py "<youtube-url>"` only when the user explicitly asks for Xiaohongshu copy, 小红书文案, 小红书笔记, 小红书风格, or content for posting on 小红书.
 
 ## Direct Caption Workflow
 
@@ -92,39 +91,12 @@ When the user asks for more detail, expand with:
 - `有时间戳的要点`
 - `值得追问的问题`
 
-## Xiaohongshu Markdown Output
-
-Use the Xiaohongshu flow only when the user explicitly asks for Xiaohongshu / 小红书 output. Do not use it for ordinary YouTube summaries.
-
-Run:
-
-```bash
-python3 scripts/youtube_to_xiaohongshu_post.py "https://www.youtube.com/watch?v=VIDEO_ID" --output /tmp/xiaohongshu_post.md
-```
-
-The Xiaohongshu script uses a two-stage generation flow:
-
-1. Extract transcript structure into `structured_summary`.
-2. Rewrite only from `structured_summary` into a Markdown 小红书笔记.
-
-The final Markdown contains:
-
-- `【标题】`
-- `【封面文案】`
-- `【正文】`
-- `【标签】`
-
-The final Markdown is meant to be publishable Xiaohongshu copy, not a transcript summary report or personal reaction. Titles are grouped into pain-point, counterintuitive, audience, and viewpoint styles. The rewrite step must use an objective editor voice, include a source note such as "以下内容基于 YouTube 视频《...》的字幕整理与翻译，不是逐字稿", avoid first-person wording, use reader-facing scenarios, translate abstract ideas into everyday work language, and avoid repeatedly saying "the video says" or "the guest thinks".
-
-The final rewrite step must not read the full transcript directly. It must not invent facts, exaggerate claims, manufacture authority, use heavy clickbait language, or add forced engagement prompts such as asking users to like, save, follow, or comment. The JSON output still includes `fact_check` for internal quality control, but the final Markdown does not display a fact-check table.
-
 ## Limits
 
 - This skill works on individual YouTube video URLs, not channels or playlists.
 - If the video has no accessible captions, do not fabricate a summary.
 - Visual evidence mode extracts frames and builds multimodal segment artifacts, but it does not yet make visual claims in the final report unless a later multimodal model step is added.
 - `--translate-to` uses only translation exposed through the API provider. The `yt-dlp` fallback preserves its selected source-caption language. Response translation normally happens during report generation, so always answer in the user's requested language or the current conversation language.
-- Xiaohongshu output is Markdown-first and should be used only for explicit 小红书文案 or 小红书笔记 requests.
 
 ## Scripts
 
@@ -134,4 +106,3 @@ The final rewrite step must not read the full transcript directly. It must not i
 - `scripts/render_multimodal_timeline.py`: Render `multimodal_segments.json` as a local HTML timeline with captions and kept frames.
 - `scripts/youtube_to_chinese_report.py`: One-command wrapper that fetches the transcript and generates `summary` plus `mentioned_items` in `--response-language`.
 - `scripts/validate_real_youtube_captions.py`: Validate a 25-video page-audited manifest through the same fixed two-provider caption entry point.
-- `scripts/youtube_to_xiaohongshu_post.py`: Explicit Xiaohongshu-only wrapper that fetches or reuses a transcript, saves optional raw/cleaned/structured artifacts, uses two Codex schema-constrained steps, and renders the final 小红书 Markdown post.
