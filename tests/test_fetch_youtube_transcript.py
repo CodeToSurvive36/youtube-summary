@@ -385,16 +385,41 @@ Next line
         self.assertNotIn("--asr-model", completed.stdout)
 
     def test_skill_docs_define_only_api_then_yt_dlp_caption_acquisition(self) -> None:
-        for path in (SKILL_PATH, README_PATH):
-            source = path.read_text(encoding="utf-8")
-            lowered = source.lower()
-            self.assertIn("api -> yt-dlp", lowered)
-            self.assertIn("skip_download=true", lowered)
-            self.assertIn("computer-use", lowered)
-            self.assertIn("browser cookies", lowered)
-            self.assertIn("speech recognition", lowered)
-            self.assertNotIn("caption acquisition has exactly one implementation", lowered)
-            self.assertNotIn("caption acquisition has one implementation", lowered)
+        source = SKILL_PATH.read_text(encoding="utf-8").lower()
+        self.assertIn("api -> yt-dlp", source)
+        self.assertIn("skip_download=true", source)
+        self.assertIn("computer-use", source)
+        self.assertIn("browser cookies", source)
+        self.assertIn("speech recognition", source)
+
+    def test_readme_is_bilingual_and_usage_only(self) -> None:
+        source = README_PATH.read_text(encoding="utf-8")
+        lowered = source.lower()
+
+        self.assertIn("[中文](#中文)", source)
+        self.assertIn("[English](#english)", source)
+        self.assertIn("## 中文", source)
+        self.assertIn("## English", source)
+        self.assertIn("回复语言", source)
+        self.assertIn("response language", lowered)
+        self.assertIn("小红书", source)
+        self.assertIn("Xiaohongshu", source)
+        self.assertGreaterEqual(source.count("$youtube-caption-summary"), 6)
+
+        for forbidden in (
+            "youtube-transcript-api",
+            "yt-dlp",
+            "skip_download",
+            "automatic_captions",
+            "caption.v2",
+            "scripts/",
+            "ffmpeg",
+            "cookies-from-browser",
+            "computer-use",
+            "speech recognition",
+            "provider",
+        ):
+            self.assertNotIn(forbidden, lowered)
 
     def test_render_chunks_reads_v2_artifact_chunks(self) -> None:
         payload = {"chunks": [{"text": "chunk"}], "selected_result": {"text": "all", "segments": []}}

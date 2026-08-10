@@ -4,3 +4,4 @@ __pycache__/
 .vendor-install.lock
 scripts/_vendor/
 scripts/.vendor-install.lock
+docs/

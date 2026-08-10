@@ -1,134 +1,145 @@
 # YouTube Caption Summary
 
-A Codex skill for turning accessible YouTube captions into transcript-grounded summaries.
+[中文](#中文) | [English](#english)
 
-## Direct Caption Acquisition
+## 中文
 
-Caption acquisition uses the fixed order `api -> yt-dlp`. It first calls `youtube-transcript-api==1.2.4`; only after an API error or empty result does it call `yt-dlp>=2025.1.0` once. The fallback reads only YouTube's `subtitles` or `automatic_captions` metadata and the selected caption-track URL. Its options include `skip_download=True` and `download=False`, with no video or audio format selection.
+[English](#english)
 
-The caption command does not use a visible transcript panel, browser state, browser cookies, browser automation, `computer-use`, downloaded media, speech recognition, or a third caption source. If both approved providers fail, it reports both failures instead of substituting a title, description, page text, audio transcription, or fabricated content. The provider order cannot be selected or reordered through command-line arguments.
+### 简介
 
-```bash
-python3 scripts/fetch_youtube_transcript.py "https://www.youtube.com/watch?v=VIDEO_ID" \
-  --output /tmp/youtube-transcript.json
-```
+`youtube-caption-summary` 是一个面向单个 YouTube 视频的 Codex Skill。它根据视频字幕生成有依据的摘要、要点、笔记和问答内容，并按照用户指定的语言回复。
 
-The resulting `caption.v2` artifact records `requested.providers` as `["api", "yt-dlp"]`, every provider attempt in `attempts`, and the actual successful provider in `selected_result.provider`, `selection.provider`, and each chunk's `source_provider`. It preserves the actual `language_code` and records YouTube-generated captions with `is_generated: true`.
+### 可以做什么
 
-## What This Skill Can Do
+- 总结视频的主题、论点、结论或叙事脉络。
+- 提取完整字幕或带时间戳的字幕片段。
+- 整理关键要点、章节式大纲、学习笔记和问答材料。
+- 列出字幕中明确提到的人物、产品、工具、团队、概念和其他名称。
+- 标出某个主题在视频中出现的位置，方便快速跳转。
+- 按用户指定的语言生成结果，不受原字幕语言限制。
+- 在用户明确要求时，结合视频画面补充上下文。
+- 在用户明确要求时，生成适合发布的小红书文案。
 
-- Fetch captions or subtitles from an individual YouTube video.
-- Summarize the video from transcript evidence instead of guessing from the title, thumbnail, or description.
-- Extract key points, outlines, notes, Q&A source material, and mentioned topics.
-- List people, products, tools, teams, concepts, or other named items mentioned in the transcript.
-- Use timestamped transcript segments when the user asks where something was mentioned.
-- Warn when captions are unavailable, incomplete, auto-generated, or language fallback was used.
-- Optionally extract representative video frames and merge them with transcript windows for later multimodal analysis.
+### 如何使用
 
-## Xiaohongshu Markdown Output
+在 Codex 中提供一个 YouTube 视频链接，并在请求中使用 `$youtube-caption-summary`。
 
-Use the Xiaohongshu flow only when you explicitly want 小红书文案 / 小红书笔记 / Xiaohongshu-style posting copy. Ordinary YouTube summaries still use the default summary flow.
-
-```bash
-python3 scripts/youtube_to_xiaohongshu_post.py "https://www.youtube.com/watch?v=VIDEO_ID" \
-  --output /tmp/xiaohongshu_post.md \
-  --structured-summary-output /tmp/structured_summary.json \
-  --json-output /tmp/xiaohongshu_post.json
-```
-
-The final Markdown includes:
-
-- `【标题】`
-- `【封面文案】`
-- `【正文】`
-- `【标签】`
-
-The script first extracts transcript structure, then rewrites that structured summary into a publishable Xiaohongshu note. Titles are grouped into pain-point, counterintuitive, audience, and viewpoint styles. The final rewrite uses an objective editor voice, not first-person reactions, and the body includes a source note such as `以下内容基于 YouTube 视频《...》的字幕整理与翻译，不是逐字稿`. The final rewrite step does not directly use the full transcript.
-
-The JSON output still includes `fact_check` for internal quality review. The Markdown output intentionally does not include a fact-check table, because it is meant to be posting copy rather than a report.
-
-## Visual Evidence Artifacts
-
-The first visual MVP does not call a multimodal model. It produces artifacts that a later model step can consume:
-
-```bash
-python3 scripts/youtube_to_chinese_report.py "https://www.youtube.com/watch?v=VIDEO_ID" \
-  --response-language Chinese \
-  --with-frames \
-  --frames-output /tmp/frames_manifest.json \
-  --multimodal-output /tmp/multimodal_segments.json \
-  --html-output /tmp/video_timeline.html
-```
-
-To decouple caption fetching from frame extraction, pass an existing transcript and skip report generation:
-
-```bash
-python3 scripts/youtube_to_chinese_report.py "https://www.youtube.com/watch?v=VIDEO_ID" \
-  --transcript-input /tmp/transcript.json \
-  --with-frames \
-  --skip-report \
-  --frames-output /tmp/frames_manifest.json \
-  --multimodal-output /tmp/multimodal_segments.json
-```
-
-Frame extraction uses timed frames, ffmpeg scene detection, pHash deduplication, and per-segment frame caps. Scene-change frames include `scene_score` in `frames_manifest.json`, and can be controlled with `--scene-min-gap-seconds` and `--max-scene-frames-per-segment`. `ffmpeg` and `ffprobe` must be available on PATH. Python dependencies are installed into `scripts/_vendor/` on first use.
-If YouTube blocks media download but exposes storyboards, the frame extractor falls back to storyboard thumbnails and marks `settings.extraction_method` as `storyboard`.
-
-If YouTube blocks anonymous video download with `HTTP Error 403: Forbidden`, pass browser cookies:
-
-```bash
-python3 scripts/youtube_to_chinese_report.py "https://www.youtube.com/watch?v=VIDEO_ID" \
-  --with-frames \
-  --skip-report \
-  --cookies-from-browser chrome \
-  --frames-output /tmp/frames_manifest.json \
-  --multimodal-output /tmp/multimodal_segments.json \
-  --html-output /tmp/video_timeline.html
-```
-
-To render an HTML timeline from an existing multimodal segment file:
-
-```bash
-python3 scripts/render_multimodal_timeline.py \
-  --segments /tmp/multimodal_segments.json \
-  --output /tmp/video_timeline.html
-```
-
-## Response Language
-
-Caption language and response language are independent. Ask for any response language in the Codex request, or pass it explicitly to the report wrapper:
-
-```bash
-python3 scripts/youtube_to_chinese_report.py "https://www.youtube.com/watch?v=VIDEO_ID" \
-  --response-language English
-```
-
-Chinese:
+总结视频：
 
 ```text
-Use $youtube-caption-summary to summarize this video in Chinese:
+使用 $youtube-caption-summary 总结这个视频，并列出其中提到的人物、产品和主题：
 https://www.youtube.com/watch?v=VIDEO_ID
 ```
 
-中文：
+指定回复语言：
 
 ```text
-使用 $youtube-caption-summary 总结这个视频，用中文输出：
+使用 $youtube-caption-summary 总结这个视频，用日语回复：
 https://www.youtube.com/watch?v=VIDEO_ID
 ```
 
-English:
+提取字幕：
 
 ```text
-Use $youtube-caption-summary to summarize this video in English:
+使用 $youtube-caption-summary 提取这个视频的字幕，并保留时间戳：
 https://www.youtube.com/watch?v=VIDEO_ID
 ```
 
-英文：
+整理带时间戳的要点：
 
 ```text
-使用 $youtube-caption-summary 总结这个视频，用英文输出：
+使用 $youtube-caption-summary 列出这个视频的关键结论，并标明对应时间：
 https://www.youtube.com/watch?v=VIDEO_ID
 ```
 
-When no response language is specified in a Codex request, the skill uses the current conversation language. The report wrapper defaults to Chinese for command-line compatibility and accepts any explicit `--response-language` value.
+生成小红书文案：
+
+```text
+使用 $youtube-caption-summary 根据这个视频生成一篇中文小红书笔记：
+https://www.youtube.com/watch?v=VIDEO_ID
+```
+
+### 回复语言
+
+可以在请求中指定任意回复语言。如果没有指定，Skill 会使用当前对话语言。原字幕语言与最终回复语言相互独立。
+
+### 适用范围
+
+- 每次处理一个 YouTube 视频链接，不处理频道或播放列表。
+- 视频需要具有可访问的字幕，才能生成基于字幕的结果。
+- 如果字幕不可访问，Skill 会明确说明，不会根据标题、缩略图或描述编造视频内容。
+- 主要结论来自字幕；仅存在于画面且未在字幕中表达的信息可能不会出现在普通摘要中。
+
+[返回顶部](#youtube-caption-summary) | [English](#english)
+
+## English
+
+[中文](#中文)
+
+### Introduction
+
+`youtube-caption-summary` is a Codex Skill for individual YouTube videos. It creates transcript-grounded summaries, key points, notes, and Q&A material, then responds in the language requested by the user.
+
+### What It Can Do
+
+- Summarize a video's topics, arguments, conclusions, or narrative.
+- Extract full captions or timestamped caption segments.
+- Produce key points, structured outlines, study notes, and Q&A material.
+- List people, products, tools, teams, concepts, and other named items explicitly mentioned in the captions.
+- Identify when a topic appears so the user can navigate to the relevant moment.
+- Return results in the requested language, independently of the source-caption language.
+- Include visual context when the user explicitly requests it.
+- Create Xiaohongshu copy when the user explicitly requests it.
+
+### How to Use
+
+Provide one YouTube video link in Codex and include `$youtube-caption-summary` in the request.
+
+Summarize a video:
+
+```text
+Use $youtube-caption-summary to summarize this video and list the people, products, and topics it mentions:
+https://www.youtube.com/watch?v=VIDEO_ID
+```
+
+Choose the response language:
+
+```text
+Use $youtube-caption-summary to summarize this video and respond in Japanese:
+https://www.youtube.com/watch?v=VIDEO_ID
+```
+
+Extract captions:
+
+```text
+Use $youtube-caption-summary to extract the captions from this video and keep the timestamps:
+https://www.youtube.com/watch?v=VIDEO_ID
+```
+
+Create timestamped key points:
+
+```text
+Use $youtube-caption-summary to list the key conclusions from this video with their timestamps:
+https://www.youtube.com/watch?v=VIDEO_ID
+```
+
+Create Xiaohongshu copy:
+
+```text
+Use $youtube-caption-summary to create a Chinese Xiaohongshu post based on this video:
+https://www.youtube.com/watch?v=VIDEO_ID
+```
+
+### Response Language
+
+The request can specify any response language. If none is specified, the Skill uses the current conversation language. The source-caption language and the final response language are independent.
+
+### Scope
+
+- Each request handles one YouTube video link, not a channel or playlist.
+- Accessible captions are required for transcript-grounded results.
+- If captions are unavailable, the Skill says so instead of inventing content from the title, thumbnail, or description.
+- The main result is grounded in captions; information shown only on screen may not appear in a standard summary.
+
+[Back to top](#youtube-caption-summary) | [中文](#中文)
