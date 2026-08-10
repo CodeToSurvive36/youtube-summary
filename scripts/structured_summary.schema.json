@@ -1,0 +1,102 @@
+{
+  "type": "object",
+  "properties": {
+    "one_sentence_summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 220
+    },
+    "main_question": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 260
+    },
+    "core_viewpoints": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "properties": {
+          "point": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 220
+          },
+          "evidence_or_examples": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 4,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 260
+            }
+          }
+        },
+        "required": [
+          "point",
+          "evidence_or_examples"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "important_concepts": {
+      "type": "array",
+      "maxItems": 12,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 120
+      }
+    },
+    "data_facts_quotes": {
+      "type": "array",
+      "maxItems": 12,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 220
+      }
+    },
+    "outline": {
+      "type": "array",
+      "maxItems": 12,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 180
+      }
+    },
+    "takeaways": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 180
+      }
+    },
+    "insufficient_evidence": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 180
+      }
+    }
+  },
+  "required": [
+    "one_sentence_summary",
+    "main_question",
+    "core_viewpoints",
+    "important_concepts",
+    "data_facts_quotes",
+    "outline",
+    "takeaways",
+    "insufficient_evidence"
+  ],
+  "additionalProperties": false
+}

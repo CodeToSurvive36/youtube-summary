@@ -2,6 +2,17 @@
 
 A Codex skill for turning accessible YouTube captions into transcript-grounded summaries.
 
+## Direct Caption Acquisition
+
+Caption acquisition has one implementation: `youtube-transcript-api==1.2.4` connects directly to YouTube's network interfaces. The caption command does not use a visible transcript panel, browser state, browser cookies, `yt-dlp`, downloaded audio, or speech recognition, and it does not substitute another source when YouTube rejects the request.
+
+```bash
+python3 scripts/fetch_youtube_transcript.py "https://www.youtube.com/watch?v=VIDEO_ID" \
+  --output /tmp/youtube-transcript.json
+```
+
+The resulting `caption.v2` artifact always records `selected_result.provider` as `api`, preserves the actual `language_code`, and records YouTube-generated captions with `is_generated: true`.
+
 ## What This Skill Can Do
 
 - Fetch captions or subtitles from an individual YouTube video.
@@ -12,12 +23,35 @@ A Codex skill for turning accessible YouTube captions into transcript-grounded s
 - Warn when captions are unavailable, incomplete, auto-generated, or language fallback was used.
 - Optionally extract representative video frames and merge them with transcript windows for later multimodal analysis.
 
+## Xiaohongshu Markdown Output
+
+Use the Xiaohongshu flow only when you explicitly want 小红书文案 / 小红书笔记 / Xiaohongshu-style posting copy. Ordinary YouTube summaries still use the default summary flow.
+
+```bash
+python3 scripts/youtube_to_xiaohongshu_post.py "https://www.youtube.com/watch?v=VIDEO_ID" \
+  --output /tmp/xiaohongshu_post.md \
+  --structured-summary-output /tmp/structured_summary.json \
+  --json-output /tmp/xiaohongshu_post.json
+```
+
+The final Markdown includes:
+
+- `【标题】`
+- `【封面文案】`
+- `【正文】`
+- `【标签】`
+
+The script first extracts transcript structure, then rewrites that structured summary into a publishable Xiaohongshu note. Titles are grouped into pain-point, counterintuitive, audience, and viewpoint styles. The final rewrite uses an objective editor voice, not first-person reactions, and the body includes a source note such as `以下内容基于 YouTube 视频《...》的字幕整理与翻译，不是逐字稿`. The final rewrite step does not directly use the full transcript.
+
+The JSON output still includes `fact_check` for internal quality review. The Markdown output intentionally does not include a fact-check table, because it is meant to be posting copy rather than a report.
+
 ## Visual Evidence Artifacts
 
 The first visual MVP does not call a multimodal model. It produces artifacts that a later model step can consume:
 
 ```bash
 python3 scripts/youtube_to_chinese_report.py "https://www.youtube.com/watch?v=VIDEO_ID" \
+  --response-language Chinese \
   --with-frames \
   --frames-output /tmp/frames_manifest.json \
   --multimodal-output /tmp/multimodal_segments.json \
@@ -58,9 +92,14 @@ python3 scripts/render_multimodal_timeline.py \
   --output /tmp/video_timeline.html
 ```
 
-## English / Chinese Output
+## Response Language
 
-The skill can answer in either English or Chinese. Choose the output language in your Codex request.
+Caption language and response language are independent. Ask for any response language in the Codex request, or pass it explicitly to the report wrapper:
+
+```bash
+python3 scripts/youtube_to_chinese_report.py "https://www.youtube.com/watch?v=VIDEO_ID" \
+  --response-language English
+```
 
 Chinese:
 
@@ -90,4 +129,4 @@ https://www.youtube.com/watch?v=VIDEO_ID
 https://www.youtube.com/watch?v=VIDEO_ID
 ```
 
-By default, the bundled report script is optimized for Chinese output. For English output, request English explicitly in Codex.
+When no response language is specified in a Codex request, the skill uses the current conversation language. The report wrapper defaults to Chinese for command-line compatibility and accepts any explicit `--response-language` value.

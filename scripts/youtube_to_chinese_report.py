@@ -24,15 +24,14 @@ class UserError(RuntimeError):
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Fetch a YouTube transcript and generate a Chinese summary report.",
+        description="Fetch a YouTube transcript and generate a grounded summary report.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("video", help="A YouTube URL or raw 11-character video ID.")
     parser.add_argument(
-        "--strategy",
-        choices=("auto", "api", "browser"),
-        default="auto",
-        help="Transcript fetch strategy passed through to fetch_youtube_transcript.py.",
+        "--response-language",
+        default="Chinese",
+        help="Language for the generated summary and mentioned-item report.",
     )
     parser.add_argument(
         "--langs",
@@ -49,7 +48,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--json-output",
-        help="Optional path to save the structured Chinese report JSON from Codex.",
+        help="Optional path to save the structured report JSON from Codex.",
     )
     parser.add_argument(
         "--output",
@@ -166,8 +165,6 @@ def run_fetch_step(args: argparse.Namespace, transcript_path: Path) -> dict[str,
         sys.executable,
         str(FETCH_SCRIPT),
         args.video,
-        "--strategy",
-        args.strategy,
         "--langs",
         args.langs,
         "--output",
@@ -264,19 +261,20 @@ def run_timeline_step(multimodal_path: Path, html_path: Path) -> None:
         raise UserError(message or "HTML timeline render step failed.")
 
 
-def build_codex_prompt(transcript_path: Path) -> str:
+def build_codex_prompt(transcript_path: Path, response_language: str = "Chinese") -> str:
     return (
         "Read the YouTube transcript JSON at "
         f'"{transcript_path}". '
         "Return a JSON object that matches the provided schema. "
         "Requirements: "
         "1. Base every claim only on the transcript JSON and its metadata. "
-        "2. Write `chinese_summary` in Chinese as one concise paragraph or a few compact sentences. "
-        "3. If the transcript metadata contains caveats in `notes`, incorporate the important reliability caveat briefly into the Chinese summary when it matters. "
-        "4. Write `mentioned_items` as a flat deduplicated list of the most important items explicitly mentioned in the transcript, keeping it within the schema limit. "
-        "5. Normalize obvious transcript or ASR misspellings for well-known proper nouns when the intended identity is clear from context. "
-        "6. Use Chinese when natural, but keep proper nouns such as people, teams, products, and tools in their original form when that is clearer. "
-        "7. Do not invent visuals, facts, or conclusions not grounded in the transcript."
+        f"2. Write `summary` in {response_language} as one concise paragraph or a few compact sentences. "
+        f"3. Write every user-facing field, including `mentioned_items`, in {response_language}. "
+        "4. If the transcript metadata contains caveats in `notes`, incorporate the important reliability caveat briefly into the summary when it matters. "
+        "5. Write `mentioned_items` as a flat deduplicated list of the most important items explicitly mentioned in the transcript, keeping it within the schema limit. "
+        "6. Normalize obvious caption misspellings for well-known proper nouns when the intended identity is clear from context. "
+        "7. Keep proper nouns such as people, teams, products, and tools in their original form when that is clearer. "
+        "8. Do not invent visuals, facts, or conclusions not grounded in the transcript."
     )
 
 
@@ -285,6 +283,7 @@ def run_codex_report_step(
     transcript_path: Path,
     schema_path: Path,
     model: str | None,
+    response_language: str = "Chinese",
 ) -> dict[str, Any]:
     with tempfile.NamedTemporaryFile("w+", suffix=".json", delete=False) as handle:
         output_path = Path(handle.name)
@@ -307,7 +306,7 @@ def run_codex_report_step(
     ]
     if model:
         command.extend(["--model", model])
-    command.append(build_codex_prompt(transcript_path))
+    command.append(build_codex_prompt(transcript_path, response_language))
 
     completed = subprocess.run(
         command,
@@ -325,8 +324,11 @@ def run_codex_report_step(
         output_path.unlink(missing_ok=True)
 
 
-def render_markdown_report(report_payload: dict[str, Any]) -> str:
-    lines = ["中文摘要", report_payload["chinese_summary"].strip(), "", "提到的内容"]
+def render_markdown_report(report_payload: dict[str, Any], response_language: str = "Chinese") -> str:
+    is_chinese = response_language.strip().lower() in {"chinese", "中文", "zh", "zh-cn"}
+    summary_label = "中文摘要" if is_chinese else "Summary"
+    items_label = "提到的内容" if is_chinese else "Mentioned items"
+    lines = [summary_label, report_payload["summary"].strip(), "", items_label]
     for item in report_payload["mentioned_items"]:
         lines.append(f"- {item.strip()}")
     return "\n".join(lines).strip() + "\n"
@@ -407,8 +409,9 @@ def main() -> int:
             transcript_path=transcript_path,
             schema_path=REPORT_SCHEMA,
             model=args.model,
+            response_language=args.response_language,
         )
-        markdown = render_markdown_report(report_payload)
+        markdown = render_markdown_report(report_payload, args.response_language)
 
         write_optional_json(args.json_output, report_payload)
         write_output(args.output, markdown)

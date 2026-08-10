@@ -1,4 +1,4 @@
 interface:
   display_name: "YouTube Caption Summary"
-  short_description: "Fetch subtitles and output Chinese summary plus mentioned items."
-  default_prompt: "Use $youtube-caption-summary to fetch subtitles from this YouTube link and return 中文摘要 plus 提到的内容."
+  short_description: "Fetch YouTube captions directly and summarize in your language."
+  default_prompt: "Use $youtube-caption-summary to fetch captions directly from this YouTube link and return a grounded summary plus mentioned items in my language."

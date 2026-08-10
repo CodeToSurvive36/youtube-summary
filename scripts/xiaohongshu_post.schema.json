@@ -1,0 +1,131 @@
+{
+  "type": "object",
+  "properties": {
+    "title_groups": {
+      "type": "object",
+      "properties": {
+        "pain_point": {
+          "type": "array",
+          "description": "痛点型标题，面向读者的具体工作痛点。",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 24
+          }
+        },
+        "counterintuitive": {
+          "type": "array",
+          "description": "反常识型标题，表达视频内容中对常见认知的修正。",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 24
+          }
+        },
+        "audience": {
+          "type": "array",
+          "description": "人群型标题，直接点名产品经理、设计师、工程师、创业者或知识工作者。",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 24
+          }
+        },
+        "viewpoint": {
+          "type": "array",
+          "description": "观点型标题，提炼可带走的判断，不夸大。",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 24
+          }
+        }
+      },
+      "required": [
+        "pain_point",
+        "counterintuitive",
+        "audience",
+        "viewpoint"
+      ],
+      "additionalProperties": false
+    },
+    "cover_lines": {
+      "type": "array",
+      "description": "5 个可放在小红书封面上的短句，要直接、具体、有冲突感。",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 12
+      }
+    },
+    "body": {
+      "type": "string",
+      "description": "600-900 个中文字符的小红书正文。要以读者场景或反常识判断切入，像真实用户整理笔记，不像视频摘要报告。",
+      "minLength": 600,
+      "maxLength": 900
+    },
+    "tags": {
+      "type": "array",
+      "description": "8-12 个和主题、人群、场景强相关的小红书标签。",
+      "minItems": 8,
+      "maxItems": 12,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "fact_check": {
+      "type": "array",
+      "description": "内部质量校验字段，不展示在最终 Markdown。列出正文中使用的关键信息点及来源。",
+      "minItems": 5,
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "properties": {
+          "claim": {
+            "type": "string",
+            "minLength": 1
+          },
+          "source_type": {
+            "type": "string",
+            "enum": [
+              "字幕",
+              "标题",
+              "描述",
+              "章节",
+              "结构化摘要"
+            ]
+          },
+          "source_detail": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "claim",
+          "source_type",
+          "source_detail"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "title_groups",
+    "cover_lines",
+    "body",
+    "tags",
+    "fact_check"
+  ],
+  "additionalProperties": false
+}

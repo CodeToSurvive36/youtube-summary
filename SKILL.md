@@ -1,6 +1,6 @@
 ---
 name: youtube-caption-summary
-description: Fetch captions or subtitles from a YouTube video URL and turn them into a grounded summary, outline, topic list, notes, or Q&A source. Use when the user shares a YouTube link and asks to summarize the video, extract captions/subtitles, list what was mentioned, identify key points, answer questions from the spoken content, or requests like "总结这个 YouTube 视频", "提取字幕", or "列出视频里提到的内容".
+description: Use when a user provides an individual YouTube video URL or video ID and asks for a transcript-grounded summary, outline, topic list, notes, Q&A, caption extraction, key points, mentioned items, or requests such as "总结这个 YouTube 视频", "提取字幕", or "列出视频里提到的内容".
 ---
 
 # YouTube Caption Summary
@@ -9,77 +9,72 @@ Use this skill when the user provides a YouTube video URL and wants an answer gr
 
 ## Quick Start
 
-1. For the default user-facing result, run `python3 scripts/youtube_to_chinese_report.py "<youtube-url>"`.
+1. For the default user-facing result, run `python3 scripts/youtube_to_chinese_report.py "<youtube-url>" --response-language "<user-language>"`.
 2. For raw transcript JSON, run `python3 scripts/fetch_youtube_transcript.py "<youtube-url>" --output /tmp/youtube-transcript.json`.
-3. Use the report script when the user wants `中文摘要 + 提到的内容`.
+3. Use the report script when the user wants a summary plus mentioned items.
 4. Use the fetch script when you need raw `segments`, `chapters`, or transcript metadata.
 5. For visual evidence artifacts, run the report wrapper with `--with-frames`, or pass `--transcript-input` to reuse a transcript from a separate caption flow.
+6. Use `python3 scripts/youtube_to_xiaohongshu_post.py "<youtube-url>"` only when the user explicitly asks for Xiaohongshu copy, 小红书文案, 小红书笔记, 小红书风格, or content for posting on 小红书.
 
-## Reliability-First Workflow
+## Direct Caption Workflow
 
-### 1. Fetch with automatic strategy selection
+### 1. Fetch directly from YouTube
 
 - Run the bundled script from the skill folder.
-- The default `--strategy auto` flow is the preferred path.
-- The script first tries a real browser session and extracts the transcript from the YouTube transcript panel.
-- If browser transcript extraction is unavailable or fails, the script falls back to `youtube-transcript-api`.
+- Caption acquisition has exactly one implementation: `youtube-transcript-api==1.2.4` connecting to YouTube's network interfaces.
 - The script auto-installs `youtube-transcript-api` into `scripts/_vendor/` on first use, so no global Python package install is required.
-- Browser transcript extraction requires `npx` on PATH plus the Playwright CLI wrapper from `~/.codex/skills/playwright/`, or the ability to run `npx --package @playwright/cli playwright-cli`.
+- Do not obtain captions from a visible transcript panel, browser state, browser cookies, `yt-dlp`, downloaded media, speech recognition, or any alternate source.
+- A fetch failure remains a failure. Do not replace missing captions with a title, description, page text, audio transcription, or fabricated content.
 
 Common commands:
 
 ```bash
 python3 scripts/fetch_youtube_transcript.py "https://www.youtube.com/watch?v=VIDEO_ID" --output /tmp/video.json
 python3 scripts/fetch_youtube_transcript.py "https://youtu.be/VIDEO_ID" --format text
-python3 scripts/fetch_youtube_transcript.py "https://www.youtube.com/watch?v=VIDEO_ID" --strategy api --output /tmp/video.json
-python3 scripts/fetch_youtube_transcript.py "https://www.youtube.com/watch?v=VIDEO_ID" --strategy browser --output /tmp/video.json
-python3 scripts/youtube_to_chinese_report.py "https://www.youtube.com/watch?v=VIDEO_ID"
-python3 scripts/youtube_to_chinese_report.py "https://www.youtube.com/watch?v=VIDEO_ID" --with-frames --frames-output /tmp/frames_manifest.json --multimodal-output /tmp/multimodal_segments.json
-python3 scripts/youtube_to_chinese_report.py "https://www.youtube.com/watch?v=VIDEO_ID" --with-frames --skip-report --cookies-from-browser chrome --frames-output /tmp/frames_manifest.json --multimodal-output /tmp/multimodal_segments.json --html-output /tmp/video_timeline.html
+python3 scripts/youtube_to_chinese_report.py "https://www.youtube.com/watch?v=VIDEO_ID" --response-language Chinese
+python3 scripts/youtube_to_chinese_report.py "https://www.youtube.com/watch?v=VIDEO_ID" --response-language "<user-language>" --with-frames --frames-output /tmp/frames_manifest.json --multimodal-output /tmp/multimodal_segments.json
 python3 scripts/youtube_to_chinese_report.py "https://www.youtube.com/watch?v=VIDEO_ID" --transcript-input /tmp/video.json --with-frames --skip-report --frames-output /tmp/frames_manifest.json --multimodal-output /tmp/multimodal_segments.json
 python3 scripts/render_multimodal_timeline.py --segments /tmp/multimodal_segments.json --output /tmp/video_timeline.html
 ```
 
 ### 2. Read the metadata before summarizing
 
-- Check `strategy_used` to see whether the result came from the browser transcript panel or the direct API path.
-- Check `notes` for fetch caveats, especially when the secondary path had to be used.
+- Require `schema_version` to be `caption.v2` and `selected_result.provider` to be `api`.
+- Check `notes` for caption caveats.
 - Report `is_generated` when it is available and `true`, because auto-captions can contain recognition errors.
 - If `used_language_fallback` is `true`, mention that the script fell back to the best available caption track.
 - If the transcript is short, noisy, or incomplete, warn that the summary may miss visual-only content or uncaptioned sections.
 - If the script cannot fetch captions at all, say that directly instead of guessing from the title or description.
 
-### 3. Summarize only from transcript evidence
+### 3. Reply in the user's language from transcript evidence
 
 - Base claims on transcript text, not assumed visuals.
-- Default deliverable for this skill:
-  - `中文摘要`
-  - `提到的内容`
-- `中文摘要` should be a short paragraph or a few concise bullets that explain the main argument, conclusion, or narrative of the video.
-- `提到的内容` should be a flat list of topics, people, teams, products, tools, frameworks, or named items explicitly mentioned in the transcript.
-- If the transcript is long and clearly sectioned, use `chapters` to keep the Chinese summary organized, but keep the top-level output shape the same.
+- Use the response language explicitly requested by the user. If none is specified, use the current conversation language.
+- Source-caption language and response language are independent. Never overwrite `language_code` or `is_generated` when translating the response.
+- The summary should be a short paragraph or concise bullets explaining the main argument, conclusion, or narrative.
+- Mentioned items should be a flat list of topics, people, teams, products, tools, frameworks, or named items explicitly present in the transcript.
 - Add timestamps only when the user asks for them or when they materially improve navigation.
 - Prefer paraphrase over long quotation.
 
 ### 4. Use chapters when helpful
 
-- The payload may include `chapters` when the transcript panel exposes chapter labels.
+- The payload keeps a `chapters` field for artifact compatibility; direct caption tracks may leave it empty.
 - Use `chapters` to organize long summaries, timelines, or sectioned notes.
 - Search `segments` when the user wants where a topic was mentioned.
 - Use the `timestamp` field from each segment for concise citations such as `03:42`.
 
 ## Output Shape
 
-When the user does not ask for a custom format, use this exact structure:
+When the user does not ask for a custom format, use this structure translated into the response language:
 
-1. `中文摘要`
+1. `摘要`
 2. `提到的内容`
 
 Example shape:
 
 ```markdown
-中文摘要
-这里用一段中文概括视频核心结论。
+摘要
+这里用用户的语言概括视频核心结论。
 
 提到的内容
 - 主题 A
@@ -94,18 +89,46 @@ When the user asks for more detail, expand with:
 - `有时间戳的要点`
 - `值得追问的问题`
 
+## Xiaohongshu Markdown Output
+
+Use the Xiaohongshu flow only when the user explicitly asks for Xiaohongshu / 小红书 output. Do not use it for ordinary YouTube summaries.
+
+Run:
+
+```bash
+python3 scripts/youtube_to_xiaohongshu_post.py "https://www.youtube.com/watch?v=VIDEO_ID" --output /tmp/xiaohongshu_post.md
+```
+
+The Xiaohongshu script uses a two-stage generation flow:
+
+1. Extract transcript structure into `structured_summary`.
+2. Rewrite only from `structured_summary` into a Markdown 小红书笔记.
+
+The final Markdown contains:
+
+- `【标题】`
+- `【封面文案】`
+- `【正文】`
+- `【标签】`
+
+The final Markdown is meant to be publishable Xiaohongshu copy, not a transcript summary report or personal reaction. Titles are grouped into pain-point, counterintuitive, audience, and viewpoint styles. The rewrite step must use an objective editor voice, include a source note such as "以下内容基于 YouTube 视频《...》的字幕整理与翻译，不是逐字稿", avoid first-person wording, use reader-facing scenarios, translate abstract ideas into everyday work language, and avoid repeatedly saying "the video says" or "the guest thinks".
+
+The final rewrite step must not read the full transcript directly. It must not invent facts, exaggerate claims, manufacture authority, use heavy clickbait language, or add forced engagement prompts such as asking users to like, save, follow, or comment. The JSON output still includes `fact_check` for internal quality control, but the final Markdown does not display a fact-check table.
+
 ## Limits
 
 - This skill works on individual YouTube video URLs, not channels or playlists.
-- The primary browser path is transcript-panel based, so it still depends on YouTube exposing a transcript in the watch page.
 - If the video has no accessible captions, do not fabricate a summary.
 - Visual evidence mode extracts frames and builds multimodal segment artifacts, but it does not yet make visual claims in the final report unless a later multimodal model step is added.
-- `--translate-to` is best-effort and only fully supported on the direct API path. If the browser path is used, translate during summarization instead.
+- `--translate-to` uses only translation exposed by the selected YouTube caption track. Response translation normally happens during report generation.
+- Xiaohongshu output is Markdown-first and should be used only for explicit 小红书文案 or 小红书笔记 requests.
 
 ## Scripts
 
-- `scripts/fetch_youtube_transcript.py`: Fetch captions, normalize them into plain text plus timestamped segments, prefer browser transcript extraction in the main flow, and use the direct API path as the secondary strategy.
+- `scripts/fetch_youtube_transcript.py`: Fetch captions only through `youtube-transcript-api`, then normalize them into plain text, timestamped segments, and chunks.
 - `scripts/extract_video_frames.py`: Download or read a video, extract timed and scene-change frames with `scene_score`, pHash deduplicate them, and write `frames_manifest.json`.
 - `scripts/build_multimodal_segments.py`: Merge transcript windows and kept frame references into `multimodal_segments.json`.
 - `scripts/render_multimodal_timeline.py`: Render `multimodal_segments.json` as a local HTML timeline with captions and kept frames.
-- `scripts/youtube_to_chinese_report.py`: One-command wrapper that fetches the transcript and uses `codex exec` with a JSON schema to generate `中文摘要` plus `提到的内容`.
+- `scripts/youtube_to_chinese_report.py`: One-command wrapper that fetches the transcript and generates `summary` plus `mentioned_items` in `--response-language`.
+- `scripts/validate_real_youtube_captions.py`: Validate a 25-video page-audited manifest through the same direct-only caption entry point.
+- `scripts/youtube_to_xiaohongshu_post.py`: Explicit Xiaohongshu-only wrapper that fetches or reuses a transcript, saves optional raw/cleaned/structured artifacts, uses two Codex schema-constrained steps, and renders the final 小红书 Markdown post.
